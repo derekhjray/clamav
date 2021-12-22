@@ -103,7 +103,7 @@ RUN apk add --no-cache \
     && \
     addgroup -S "sniper" && \
     adduser -D -G "sniper" -h "/opt/metrics/data/sniper" -s "/bin/false" -S "sniper" && \
-    install -d -m 755 -g "sniper" -o "sniper" "/var/log/sniper"
+    install -d -m 755 -g "sniper" -o "sniper" "/var/log/sniper" && \
     install -d -m 755 -g "sniper" -o "sniper" "/var/run/sniper"
 
 COPY --from=builder "/sniper" "/"
