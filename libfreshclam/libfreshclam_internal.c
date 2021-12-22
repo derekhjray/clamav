@@ -223,7 +223,12 @@ fc_error_t load_freshclam_dat(void)
             }
 
             /* Rewind to just after the magic bytes and read data struct */
-            lseek(handle, strlen(MIRRORS_DAT_MAGIC), SEEK_SET);
+            if (-1 == lseek(handle, strlen(MIRRORS_DAT_MAGIC), SEEK_SET)) {
+                char error_message[260];
+                cli_strerror(errno, error_message, 260);
+                logg("!Can't seek to %lu, error: %s\n", strlen(MIRRORS_DAT_MAGIC), error_message);
+                goto done;
+            }
 
             mdat = malloc(sizeof(freshclam_dat_v1_t));
             if (NULL == mdat) {
@@ -618,8 +623,16 @@ static fc_error_t create_curl_handle(
         if (CURLE_OK != curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, g_connectTimeout)) {
             logg("!create_curl_handle: Failed to set CURLOPT_CONNECTTIMEOUT (%u)!\n", g_connectTimeout);
         }
-        if (CURLE_OK != curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_requestTimeout)) {
-            logg("!create_curl_handle: Failed to set CURLOPT_TIMEOUT (%u)!\n", g_requestTimeout);
+        if (CURLE_OK != curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, g_requestTimeout)) {
+            logg("!create_curl_handle: Failed to set CURLOPT_LOW_SPEED_TIME  (%u)!\n", g_requestTimeout);
+        }
+        if (g_requestTimeout > 0) {
+            /* Minimum speed is 1 byte/second over the previous g_requestTimeout seconds. */
+            int minimumSpeed = 1;
+
+            if (CURLE_OK != curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, minimumSpeed)) {
+                logg("!create_curl_handle: Failed to set CURLOPT_LOW_SPEED_LIMIT  (%u)!\n", minimumSpeed);
+            }
         }
 
         if (bAllowRedirect) {
@@ -997,6 +1010,12 @@ static fc_error_t remote_cvdhead(
         }
         case 403: {
             status = FC_EFORBIDDEN;
+
+            /* Try again in no less than 24 hours if freshclam received a 403 FORBIDDEN. */
+            g_freshclamDat->retry_after = time(NULL) + 60 * 60 * 24;
+
+            (void)save_freshclam_dat();
+
             break;
         }
         case 429: {
@@ -1284,7 +1303,11 @@ static fc_error_t downloadFile(
     switch (http_code) {
         case 200:
         case 206: {
-            status = FC_SUCCESS;
+            if (0 == receivedFile.size) {
+                status = FC_EEMPTYFILE;
+            } else {
+                status = FC_SUCCESS;
+            }
             break;
         }
         case 304: {
@@ -1293,6 +1316,12 @@ static fc_error_t downloadFile(
         }
         case 403: {
             status = FC_EFORBIDDEN;
+
+            /* Try again in no less than 24 hours if freshclam received a 403 FORBIDDEN. */
+            g_freshclamDat->retry_after = time(NULL) + 60 * 60 * 24;
+
+            (void)save_freshclam_dat();
+
             break;
         }
         case 429: {
@@ -1794,7 +1823,7 @@ static fc_error_t buildcld(
         }
     }
 
-    if (NULL == (dir = opendir("."))) {
+    if (NULL == (dir = opendir(tmpdir))) {
         logg("!buildcld: Can't open directory %s\n", tmpdir);
         status = FC_EDIRECTORY;
         goto done;
@@ -2408,8 +2437,8 @@ fc_error_t updatedb(
      */
 #ifdef _WIN32
     if (!access(newLocalFilename, R_OK) && unlink(newLocalFilename)) {
-        logg("!updatedb: Can't delete old database %s. Please fix the problem manually and try again.\n", newLocalFilename);
-        status = FC_EEMPTYFILE;
+        logg("!Update failed. Can't delete the old database %s to replace it with a new database. Please fix the problem manually and try again.\n", newLocalFilename);
+        status = FC_EDBDIRACCESS;
         goto done;
     }
 #endif
@@ -2595,7 +2624,7 @@ fc_error_t updatecustomdb(
         }
         snprintf(tmpfile_with_extension, tmpfile_with_extension_len + 1, "%s-%s", tmpfile, databaseName);
         if (rename(tmpfile, tmpfile_with_extension) == -1) {
-            logg("!updatecustomdb: Can't rename %s to %s: %s\n", tmpfile, tmpfile_with_extension, strerror(errno));
+            logg("!Custom database update failed: Can't rename %s to %s: %s\n", tmpfile, tmpfile_with_extension, strerror(errno));
             free(tmpfile_with_extension);
             status = FC_EDBDIRACCESS;
             goto done;
@@ -2618,8 +2647,8 @@ fc_error_t updatecustomdb(
      */
 #ifdef _WIN32
     if (!access(databaseName, R_OK) && unlink(databaseName)) {
-        logg("!updatecustomdb: Can't delete old database %s. Please fix the problem manually and try again.\n", databaseName);
-        status = FC_EEMPTYFILE;
+        logg("!Custom database update failed. Can't delete the old database %s to replace it with a new database. Please fix the problem manually and try again.\n", databaseName);
+        status = FC_EDBDIRACCESS;
         goto done;
     }
 #endif

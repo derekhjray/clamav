@@ -31,20 +31,31 @@ target_sources( clamd
         thrmgr.c
         thrmgr.h )
 if(WIN32)
-    target_sources( clamd PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/clamd.rc )
+    target_sources( clamd
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/win32/res/clamd.rc
+        ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 target_include_directories( clamd
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
 )
 set_target_properties( clamd PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( clamd PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries( clamd
     PRIVATE
         ClamAV::libclamav
         ClamAV::common )
 if(WIN32)
-    install(TARGETS clamd DESTINATION .)
+    install(TARGETS clamd DESTINATION . COMPONENT programs)
 else()
-    install(TARGETS clamd DESTINATION ${CMAKE_INSTALL_SBINDIR})
+    install(TARGETS clamd DESTINATION ${CMAKE_INSTALL_SBINDIR} COMPONENT programs)
 endif()
 
 if(SYSTEMD_FOUND)
@@ -56,8 +67,8 @@ if(SYSTEMD_FOUND)
         ${CMAKE_CURRENT_BINARY_DIR}/clamav-daemon.socket @ONLY)
     install(
         FILES ${CMAKE_CURRENT_BINARY_DIR}/clamav-daemon.service
-        DESTINATION ${SYSTEMD_UNIT_DIR})
+        DESTINATION ${SYSTEMD_UNIT_DIR} COMPONENT programs)
     install(
         FILES ${CMAKE_CURRENT_BINARY_DIR}/clamav-daemon.socket
-        DESTINATION ${SYSTEMD_UNIT_DIR})
+        DESTINATION ${SYSTEMD_UNIT_DIR} COMPONENT programs)
 endif()

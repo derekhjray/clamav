@@ -1,7 +1,33 @@
 # ClamAV News
 
-Note: This file refers to the source tarball. Things described here may differ
- slightly from the binary packages.
+Note: This file refers to the official packages. Things described here may
+differ slightly from third-party binary packages.
+
+## 0.105.0
+
+ClamAV 0.105.0 includes the following improvements and changes.
+
+### New Requirements
+
+### Major changes
+
+### Notable changes
+
+- Added a `GenerateMetadataJson` option to ClamD.
+  The functionality is equivalent to the `clamscan --gen-json` option.
+  Scan metadata is useful for file analysis and for debugging scan behavior.
+  If `Debug` is enabled, ClamD will print out the JSON after each scan.
+  If `LeaveTemporaryFiles` is enabled, ClamD will drop a `metadata.json` file
+  in the scan-temp directory. You can customize the scan-temp directory path
+  using the `TemporaryDirectory` option.
+
+### Other improvements
+
+### Bug fixes
+
+### Acknowledgements
+
+The ClamAV team thanks the following individuals for their code submissions:
 
 ## 0.104.0
 
@@ -158,6 +184,7 @@ The ClamAV team thanks the following individuals for their code submissions:
 - Gianluigi Tiesi
 - Jonas Zaddach
 - Kenneth Hau
+- Mark Fortescue
 - Markus Strehle
 - Olliver Schinagl
 - Orion Poplawski

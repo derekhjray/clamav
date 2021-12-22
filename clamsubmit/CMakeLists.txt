@@ -22,6 +22,14 @@ target_include_directories( clamsubmit
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
 )
 set_target_properties( clamsubmit PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( clamscan PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries( clamsubmit
     PRIVATE
         ClamAV::libclamav
@@ -35,7 +43,7 @@ if(APPLE)
             ${APPLE_SECURITY} )
 endif()
 if(WIN32)
-    install(TARGETS clamsubmit DESTINATION .)
+    install(TARGETS clamsubmit DESTINATION . COMPONENT programs)
     # Also install shared library (DLL) dependencies
     install(CODE [[
         file(GET_RUNTIME_DEPENDENCIES
@@ -59,7 +67,8 @@ if(WIN32)
             endif()
         endforeach()
         #message("UNRESOLVED_DEPENDENCIES_VAR: ${_u_deps}")
-    ]])
+        ]]
+        COMPONENT programs)
 else()
-    install(TARGETS clamsubmit DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS clamsubmit DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()

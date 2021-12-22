@@ -38,6 +38,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <string.h>
+#include <stdbool.h>
 #ifdef HAVE_STRINGS_H
 #include <strings.h>
 #endif
@@ -91,7 +92,7 @@
 #include <features.h>
 #endif
 
-#if __GLIBC__ == 2 && __GLIBC_MINOR__ >= 1
+#if __GLIBC__ == 2 && __GLIBC_MINOR__ >= 1 && !defined(__UCLIBC__) || defined(__UCLIBC_HAS_BACKTRACE__)
 #define HAVE_BACKTRACE
 #endif
 #endif
@@ -113,21 +114,6 @@ static void print_trace(int use_syslog);
 #undef strtok_r
 #undef __strtok_r
 #define strtok_r(a, b, c) strtok(a, b)
-#endif
-
-#ifdef HAVE_STDBOOL_H
-#ifdef C_BEOS
-#include "SupportDefs.h"
-#else
-#include <stdbool.h>
-#endif
-#else
-#ifdef FALSE
-typedef unsigned char bool;
-#else
-typedef enum { FALSE = 0,
-               TRUE  = 1 } bool;
-#endif
 #endif
 
 typedef enum {
@@ -367,7 +353,7 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
     char buffer[RFC2821LENGTH + 1];
     mbox_ctx mctx;
     size_t at   = 0;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
 
     cli_dbgmsg("in mbox()\n");
 
@@ -375,21 +361,18 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
         /* empty message */
         return CL_CLEAN;
     }
+
 #ifdef CL_THREAD_SAFE
     pthread_mutex_lock(&tables_mutex);
 #endif
-    if (rfc821 == NULL) {
-        assert(subtype == NULL);
 
-        if (initialiseTables(&rfc821, &subtype) < 0) {
-            rfc821  = NULL;
-            subtype = NULL;
+    if (initialiseTables(&rfc821, &subtype) < 0) {
 #ifdef CL_THREAD_SAFE
-            pthread_mutex_unlock(&tables_mutex);
+        pthread_mutex_unlock(&tables_mutex);
 #endif
-            return CL_EMEM;
-        }
+        return CL_EMEM;
     }
+
 #ifdef CL_THREAD_SAFE
     pthread_mutex_unlock(&tables_mutex);
 #endif
@@ -442,7 +425,7 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
         if (m == NULL)
             return CL_EMEM;
 
-        lastLineWasEmpty = FALSE;
+        lastLineWasEmpty = false;
         messagenumber    = 1;
         messageSetCTX(m, ctx);
 
@@ -454,7 +437,7 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
                 /*
                  * End of a message in the mail box
                  */
-                bool heuristicFound = FALSE;
+                bool heuristicFound = false;
                 body                = parseEmailHeaders(m, rfc821, &heuristicFound);
                 if (body == NULL) {
                     messageReset(m);
@@ -514,7 +497,7 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
 
         if (retcode == CL_SUCCESS) {
             cli_dbgmsg("Extract attachments from email %d\n", messagenumber);
-            bool heuristicFound = FALSE;
+            bool heuristicFound = false;
             body                = parseEmailHeaders(m, rfc821, &heuristicFound);
             if (heuristicFound) {
                 retcode = CL_VIRUS;
@@ -545,7 +528,7 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
 
         buffer[sizeof(buffer) - 1] = '\0';
 
-        bool heuristicFound = FALSE;
+        bool heuristicFound = false;
         body                = parseEmailFile(map, &at, rfc821, buffer, dir, ctx, &heuristicFound);
         if (heuristicFound) {
             retcode = CL_VIRUS;
@@ -576,9 +559,15 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
                     break;
                 case MAXREC:
                     retcode = CL_EMAXREC;
+                    cli_append_virus_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxRecursion"); // Doing this now because it's actually tracking email recursion,-
+                                                                                                         // not fmap recursion, but it still is aborting with stuff not scanned.
+                                                                                                         // Also, we didn't have access to the ctx when this happened earlier.
                     break;
                 case MAXFILES:
                     retcode = CL_EMAXFILES;
+                    cli_append_virus_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxFiles"); // Doing this now because it's actually tracking email parts,-
+                                                                                                     // not actual files, but it still is aborting with stuff not scanned.
+                                                                                                     // Also, we didn't have access to the ctx when this happened earlier.
                     break;
                 case VIRUS:
                     retcode = CL_VIRUS;
@@ -605,46 +594,6 @@ cli_parse_mbox(const char *dir, cli_ctx *ctx)
     return retcode;
 }
 
-/*TODO: move these to a header.*/
-#define DO_STRDUP(buf, var) \
-    do {                    \
-        var = strdup(buf);  \
-        if (NULL == var) {  \
-            goto done;      \
-        }                   \
-    } while (0)
-
-#define DO_FREE(var)       \
-    do {                   \
-        if (NULL != var) { \
-            free(var);     \
-            var = NULL;    \
-        }                  \
-    } while (0)
-
-#define DO_MALLOC(var, size) \
-    do {                     \
-        var = malloc(size);  \
-        if (NULL == var) {   \
-            goto done;       \
-        }                    \
-    } while (0)
-
-#define DO_CALLOC(var, size)                   \
-    do {                                       \
-        (var) = calloc((size), sizeof *(var)); \
-        if (NULL == var) {                     \
-            goto done;                         \
-        }                                      \
-    } while (0)
-
-#define DO_VERIFY_POINTER(ptr) \
-    do {                       \
-        if (NULL == ptr) {     \
-            goto done;         \
-        }                      \
-    } while (0)
-
 #define READ_STRUCT_BUFFER_LEN 1024
 typedef struct _ReadStruct {
     char buffer[READ_STRUCT_BUFFER_LEN + 1];
@@ -659,7 +608,7 @@ static ReadStruct *
 appendReadStruct(ReadStruct *rs, const char *const buffer)
 {
     if (NULL == rs) {
-        assert(rs && "Invalid argument");
+        cli_dbgmsg("appendReadStruct: Invalid argument\n");
         goto done;
     }
 
@@ -671,7 +620,7 @@ appendReadStruct(ReadStruct *rs, const char *const buffer)
         strncpy(&(rs->buffer[rs->bufferLen]), buffer, part);
         rs->bufferLen += part;
 
-        DO_CALLOC(next, 1);
+        CLI_CALLOC(next, 1, sizeof(ReadStruct));
 
         rs->next = next;
         strcpy(next->buffer, &(buffer[part]));
@@ -701,7 +650,7 @@ getMallocedBufferFromList(const ReadStruct *head)
         rs = rs->next;
     }
 
-    DO_MALLOC(working, bufferLen);
+    MALLOC(working, bufferLen);
 
     rs        = head;
     bufferLen = 0;
@@ -715,7 +664,7 @@ getMallocedBufferFromList(const ReadStruct *head)
     ret = working;
 done:
     if (NULL == ret) {
-        DO_FREE(working);
+        FREE(working);
     }
 
     return ret;
@@ -726,7 +675,7 @@ freeList(ReadStruct *head)
 {
     while (head) {
         ReadStruct *rs = head->next;
-        DO_FREE(head);
+        FREE(head);
         head = rs;
     }
 }
@@ -763,14 +712,14 @@ doContinueMultipleEmptyOptions(const char *const line, bool *lastWasOnlySemi)
 
         if (1 == doCont) {
             if (*lastWasOnlySemi) {
-                return TRUE;
+                return true;
             }
-            *lastWasOnlySemi = TRUE;
+            *lastWasOnlySemi = true;
         } else {
-            *lastWasOnlySemi = FALSE;
+            *lastWasOnlySemi = false;
         }
     }
-    return FALSE;
+    return false;
 }
 
 static bool
@@ -785,15 +734,15 @@ hitLineFoldCnt(const char *const line, size_t *lineFoldCnt, cli_ctx *ctx, bool *
         }
 
         if ((*lineFoldCnt) >= HEURISTIC_EMAIL_MAX_LINE_FOLDS_PER_HEADER) {
-            if (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS) {
-                cli_append_virus(ctx, "Heuristics.Email.ExceedsMaxLineFoldCnt");
-                *heuristicFound = TRUE;
+            if (SCAN_HEURISTIC_EXCEEDS_MAX) {
+                cli_append_virus(ctx, "Heuristics.Limits.Exceeded.EmailLineFoldCnt");
+                *heuristicFound = true;
             }
 
-            return TRUE;
+            return true;
         }
     }
-    return FALSE;
+    return false;
 }
 
 static bool
@@ -801,14 +750,14 @@ haveTooManyHeaderBytes(size_t totalLen, cli_ctx *ctx, bool *heuristicFound)
 {
 
     if (totalLen > HEURISTIC_EMAIL_MAX_HEADER_BYTES) {
-        if (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS) {
-            cli_append_virus(ctx, "Heuristics.Email.ExceedsMaxHeaderBytes");
-            *heuristicFound = TRUE;
+        if (SCAN_HEURISTIC_EXCEEDS_MAX) {
+            cli_append_virus(ctx, "Heuristics.Limits.Exceeded.EmailHeaderBytes");
+            *heuristicFound = true;
         }
 
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 static bool
@@ -816,14 +765,14 @@ haveTooManyEmailHeaders(size_t totalHeaderCnt, cli_ctx *ctx, bool *heuristicFoun
 {
 
     if (totalHeaderCnt > HEURISTIC_EMAIL_MAX_HEADERS) {
-        if (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS) {
-            cli_append_virus(ctx, "Heuristics.Email.ExceedsMaxEmailHeaders");
-            *heuristicFound = TRUE;
+        if (SCAN_HEURISTIC_EXCEEDS_MAX) {
+            cli_append_virus(ctx, "Heuristics.Limits.Exceeded.EmailHeaders");
+            *heuristicFound = true;
         }
 
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 static bool
@@ -831,14 +780,14 @@ haveTooManyMIMEPartsPerMessage(size_t mimePartCnt, cli_ctx *ctx, mbox_status *rc
 {
 
     if (mimePartCnt >= HEURISTIC_EMAIL_MAX_MIME_PARTS_PER_MESSAGE) {
-        if (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS) {
-            cli_append_virus(ctx, "Heuristics.Email.ExceedsMaxMIMEPartsPerMessage");
+        if (SCAN_HEURISTIC_EXCEEDS_MAX) {
+            cli_append_virus(ctx, "Heuristics.Limits.Exceeded.EmailMIMEPartsPerMessage");
             *rc = VIRUS;
         }
 
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 static bool
@@ -846,15 +795,15 @@ haveTooManyMIMEArguments(size_t argCnt, cli_ctx *ctx, bool *heuristicFound)
 {
 
     if (argCnt >= HEURISTIC_EMAIL_MAX_ARGUMENTS_PER_HEADER) {
-        if (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS) {
-            cli_append_virus(ctx, "Heuristics.Email.ExceedsMaxMIMEArguments");
-            *heuristicFound = TRUE;
+        if (SCAN_HEURISTIC_EXCEEDS_MAX) {
+            cli_append_virus(ctx, "Heuristics.Limits.Exceeded.EmailMIMEArguments");
+            *heuristicFound = true;
         }
 
-        return TRUE;
+        return true;
     }
 
-    return FALSE;
+    return false;
 }
 
 /*
@@ -866,22 +815,22 @@ haveTooManyMIMEArguments(size_t argCnt, cli_ctx *ctx, bool *heuristicFound)
 static message *
 parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *firstLine, const char *dir, cli_ctx *ctx, bool *heuristicFound)
 {
-    bool inHeader     = TRUE;
-    bool bodyIsEmpty  = TRUE;
-    bool lastWasBlank = FALSE, lastBodyLineWasBlank = FALSE;
+    bool inHeader     = true;
+    bool bodyIsEmpty  = true;
+    bool lastWasBlank = false, lastBodyLineWasBlank = false;
     message *ret;
-    bool anyHeadersFound = FALSE;
+    bool anyHeadersFound = false;
     int commandNumber    = -1;
     char *boundary       = NULL;
     char buffer[RFC2821LENGTH + 1];
-    bool lastWasOnlySemi    = FALSE;
+    bool lastWasOnlySemi    = false;
     int err                 = 1;
     size_t totalHeaderBytes = 0;
     size_t totalHeaderCnt   = 0;
 
     size_t lineFoldCnt = 0;
 
-    *heuristicFound = FALSE;
+    *heuristicFound = false;
 
     ReadStruct *head = NULL;
     ReadStruct *curr = NULL;
@@ -891,7 +840,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
     if (ret == NULL)
         return NULL;
 
-    DO_CALLOC(head, 1);
+    CLI_CALLOC(head, 1, sizeof(ReadStruct));
     curr = head;
 
     strncpy(buffer, firstLine, sizeof(buffer) - 1);
@@ -918,10 +867,10 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
          * otherwise they'll be treated as the end of header marker
          */
         if (lastWasBlank) {
-            lastWasBlank = FALSE;
+            lastWasBlank = false;
             if (boundaryStart(buffer, boundary)) {
                 cli_dbgmsg("Found a header line with space that should be blank\n");
-                inHeader = FALSE;
+                inHeader = false;
             }
         }
         if (inHeader) {
@@ -953,20 +902,20 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     if (head->bufferLen) {
                         char *header     = getMallocedBufferFromList(head);
                         int needContinue = 0;
-                        DO_VERIFY_POINTER(header);
+                        VERIFY_POINTER(header);
 
                         totalHeaderCnt++;
                         if (haveTooManyEmailHeaders(totalHeaderCnt, ctx, heuristicFound)) {
-                            DO_FREE(header);
+                            FREE(header);
                             break;
                         }
                         needContinue = (parseEmailHeader(ret, header, rfc821, ctx, heuristicFound) < 0);
                         if (*heuristicFound) {
-                            DO_FREE(header);
+                            FREE(header);
                             break;
                         }
 
-                        DO_FREE(header);
+                        FREE(header);
                         FREELIST_REALLOC(head, curr);
 
                         if (needContinue) {
@@ -976,7 +925,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
 
                     if (boundary ||
                         ((boundary = (char *)messageFindArgument(ret, "boundary")) != NULL)) {
-                        lastWasBlank = TRUE;
+                        lastWasBlank = true;
                         continue;
                     }
                 }
@@ -991,12 +940,12 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     continue;
 
                 cli_dbgmsg("End of header information\n");
-                inHeader    = FALSE;
-                bodyIsEmpty = TRUE;
+                inHeader    = false;
+                bodyIsEmpty = true;
             } else {
                 char *ptr;
                 const char *lookahead;
-                bool lineAdded = TRUE;
+                bool lineAdded = true;
 
                 if (0 == head->bufferLen) {
                     char cmd[RFC2821LENGTH + 1], out[RFC2821LENGTH + 1];
@@ -1013,7 +962,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     if ((strchr(line, ':') == NULL) ||
                         (cli_strtokbuf(line, 0, ":", cmd) == NULL)) {
                         if (strncmp(line, "From ", 5) == 0)
-                            anyHeadersFound = TRUE;
+                            anyHeadersFound = true;
                         continue;
                     }
 
@@ -1024,7 +973,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                         case CONTENT_TRANSFER_ENCODING:
                         case CONTENT_DISPOSITION:
                         case CONTENT_TYPE:
-                            anyHeadersFound = TRUE;
+                            anyHeadersFound = true;
                             break;
                         default:
                             if (!anyHeadersFound)
@@ -1034,14 +983,14 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     curr = appendReadStruct(curr, line);
                     if (NULL == curr) {
                         if (ret) {
-                            ret->isTruncated = TRUE;
+                            ret->isTruncated = true;
                         }
                         break;
                     }
                 } else if (line != NULL) {
                     curr = appendReadStruct(curr, line);
                 } else {
-                    lineAdded = FALSE;
+                    lineAdded = false;
                 }
 
                 if (lineAdded) {
@@ -1070,7 +1019,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                 {
                     char *header     = getMallocedBufferFromList(head); /*This is the issue */
                     int needContinue = 0;
-                    DO_VERIFY_POINTER(header);
+                    VERIFY_POINTER(header);
 
                     needContinue = (header[strlen(header) - 1] == ';');
                     if (0 == needContinue) {
@@ -1080,18 +1029,18 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     if (0 == needContinue) {
                         totalHeaderCnt++;
                         if (haveTooManyEmailHeaders(totalHeaderCnt, ctx, heuristicFound)) {
-                            DO_FREE(header);
+                            FREE(header);
                             break;
                         }
                         needContinue = (parseEmailHeader(ret, header, rfc821, ctx, heuristicFound) < 0);
                         if (*heuristicFound) {
-                            DO_FREE(header);
+                            FREE(header);
                             break;
                         }
                         /*Check total headers here;*/
                     }
 
-                    DO_FREE(header);
+                    FREE(header);
                     if (needContinue) {
                         continue;
                     }
@@ -1103,7 +1052,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
              * Fast track visa to uudecode.
              * TODO: binhex, yenc
              */
-            bodyIsEmpty = FALSE;
+            bodyIsEmpty = false;
             if (uudecodeFile(ret, line, dir, map, at) < 0)
                 if (messageAddStr(ret, line) < 0)
                     break;
@@ -1119,7 +1068,7 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                     cli_dbgmsg("Ignoring consecutive blank lines in the body\n");
                     continue;
                 }
-                lastBodyLineWasBlank = TRUE;
+                lastBodyLineWasBlank = true;
             } else {
                 if (bodyIsEmpty) {
                     /*
@@ -1130,9 +1079,9 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
                      */
                     if (newline_in_header(line))
                         continue;
-                    bodyIsEmpty = FALSE;
+                    bodyIsEmpty = false;
                 }
-                lastBodyLineWasBlank = FALSE;
+                lastBodyLineWasBlank = false;
             }
 
             if (messageAddStr(ret, line) < 0)
@@ -1144,10 +1093,10 @@ parseEmailFile(fmap_t *map, size_t *at, const table_t *rfc821, const char *first
 done:
     if (err) {
         cli_errmsg("parseEmailFile: ERROR parsing file\n");
-        ret->isTruncated = TRUE;
+        ret->isTruncated = true;
     }
 
-    DO_FREE(boundary);
+    FREE(boundary);
 
     freeList(head);
 
@@ -1182,21 +1131,21 @@ done:
 static message *
 parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
 {
-    bool inHeader    = TRUE;
-    bool bodyIsEmpty = TRUE;
+    bool inHeader    = true;
+    bool bodyIsEmpty = true;
     text *t;
     message *ret;
-    bool anyHeadersFound  = FALSE;
+    bool anyHeadersFound  = false;
     int commandNumber     = -1;
     char *fullline        = NULL;
     size_t fulllinelength = 0;
-    bool lastWasOnlySemi  = FALSE;
+    bool lastWasOnlySemi  = false;
     size_t lineFoldCnt    = 0;
     size_t totalHeaderCnt = 0;
 
     cli_dbgmsg("parseEmailHeaders\n");
 
-    *heuristicFound = FALSE;
+    *heuristicFound = false;
 
     if (m == NULL)
         return NULL;
@@ -1232,11 +1181,11 @@ parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
                     cli_dbgmsg("Nothing interesting in the header\n");
                     break;
                 }
-                inHeader    = FALSE;
-                bodyIsEmpty = TRUE;
+                inHeader    = false;
+                bodyIsEmpty = true;
             } else {
                 char *ptr;
-                bool lineAdded = TRUE;
+                bool lineAdded = true;
 
                 if (fullline == NULL) {
                     char cmd[RFC2821LENGTH + 1];
@@ -1253,7 +1202,7 @@ parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
                     if ((strchr(line, ':') == NULL) ||
                         (cli_strtokbuf(line, 0, ":", cmd) == NULL)) {
                         if (strncmp(line, "From ", 5) == 0)
-                            anyHeadersFound = TRUE;
+                            anyHeadersFound = true;
                         continue;
                     }
 
@@ -1266,7 +1215,7 @@ parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
                         case CONTENT_TRANSFER_ENCODING:
                         case CONTENT_DISPOSITION:
                         case CONTENT_TYPE:
-                            anyHeadersFound = TRUE;
+                            anyHeadersFound = true;
                             break;
                         default:
                             if (!anyHeadersFound)
@@ -1283,9 +1232,9 @@ parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
                     fullline = ptr;
                     cli_strlcat(fullline, line, fulllinelength);
                 } else {
-                    lineAdded = FALSE;
+                    lineAdded = false;
                 }
-                assert(fullline != NULL);
+
                 /*continue doesn't seem right here, but that is what is done everywhere else when a malloc fails.*/
                 if (NULL == fullline) {
                     continue;
@@ -1340,7 +1289,7 @@ parseEmailHeaders(message *m, const table_t *rfc821, bool *heuristicFound)
                  */
                 if (newline_in_header(line))
                     continue;
-                bodyIsEmpty = FALSE;
+                bodyIsEmpty = false;
             }
             /*if(t->t_line && isuuencodebegin(t->t_line))
                 puts("FIXME: add fast visa here");*/
@@ -1444,7 +1393,7 @@ parseEmailHeader(message *m, const char *line, const table_t *rfc821, cli_ctx *c
         }
     }
 done:
-    DO_FREE(copy);
+    FREE(copy);
 
     return ret;
 }
@@ -1682,24 +1631,25 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
     text *aText          = textIn;
     message *mainMessage = messageIn;
     fileblob *fb;
-    bool infected                  = FALSE;
+    bool infected                  = false;
     const struct cl_engine *engine = mctx->ctx->engine;
     const int doPhishingScan       = engine->dboptions & CL_DB_PHISHING_URLS && (DCONF_PHISHING & PHISHING_CONF_ENGINE);
 #if HAVE_JSON
     json_object *saveobj = mctx->wrkobj;
 #endif
-    bool heuristicFound = FALSE;
+    bool heuristicFound = false;
 
     cli_dbgmsg("in parseEmailBody, %u files saved so far\n",
                mctx->files);
 
     /* FIXMELIMITS: this should be better integrated */
-    if (engine->maxreclevel)
+    if (engine->max_recursion_level)
         /*
          * This is approximate
          */
-        if (recursion_level > engine->maxreclevel) {
-
+        if (recursion_level > engine->max_recursion_level) {
+            // Note: engine->max_recursion_level is re-purposed here out of convenience.
+            //       ole2 recursion does not leverage the ctx->recursion_stack stack.
             cli_dbgmsg("parseEmailBody: hit maximum recursion level (%u)\n", recursion_level);
             return MAXREC;
         }
@@ -1737,7 +1687,13 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
             cli_jsonstr(mctx->wrkobj, "MimeSubtype", mimeSubtype);
             cli_jsonstr(mctx->wrkobj, "EncodingType", getEncTypeStr(messageGetEncoding(mainMessage)));
             cli_jsonstr(mctx->wrkobj, "Disposition", messageGetDispositionType(mainMessage));
-            cli_jsonstr(mctx->wrkobj, "Filename", messageHasFilename(mainMessage) ? messageGetFilename(mainMessage) : "(inline)");
+            if (messageHasFilename(mainMessage)) {
+                char *filename = messageGetFilename(mainMessage);
+                cli_jsonstr(mctx->wrkobj, "Filename", filename);
+                free(filename);
+            } else {
+                cli_jsonstr(mctx->wrkobj, "Filename", "(inline)");
+            }
         }
 #endif
 
@@ -1792,7 +1748,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                      * html too, so scan them for phishing
                      */
                     if (rc == VIRUS)
-                        infected = TRUE;
+                        infected = true;
                 }
                 break;
             case MULTIPART:
@@ -1850,7 +1806,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                             if (exportBinhexMessage(mctx, mainMessage)) {
                                 /* virus found */
                                 rc       = VIRUS;
-                                infected = TRUE;
+                                infected = true;
                                 break;
                             }
                         } else if (t_line->t_next &&
@@ -2001,7 +1957,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                                 inhead = inMimeHead = 0;
                                 continue;
                             }
-                            inMimeHead = FALSE;
+                            inMimeHead = false;
                             messageAddArgument(aMessage, line);
                         } else if (inhead) { /* handling normal headers */
                             /*int quotes;*/
@@ -2084,9 +2040,17 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                                 continue;
                             }
 
-                            inMimeHead = FALSE;
+                            inMimeHead = false;
 
-                            assert(strlen(line) <= RFC2821LENGTH);
+                            if (strlen(line) > RFC2821LENGTH) {
+                                cli_dbgmsg("parseEmailBody: line length exceds RFC2821 maximum length (1000)\n");
+                                // We must skip this line because functions like rfc822comments() may accept output buffers
+                                // that [RFC2821LENGTH + 1] in and don't have any length checks to prevent exceeding that max.
+                                // E.g. See `boundaryStart()`.
+                                // TODO: A larger audit would be needed to remove this limitation, though frankly I recommend
+                                // fully re-writing the email parser (in Rust).
+                                continue;
+                            }
 
                             fullline = rfc822comments(line, NULL);
                             if (fullline == NULL)
@@ -2118,7 +2082,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                                      */
                                     cli_dbgmsg("Multipart %d: headers not terminated by blank line\n",
                                                multiparts);
-                                    inhead = FALSE;
+                                    inhead = false;
                                     break;
                                 }
 
@@ -2193,7 +2157,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                             }
                             --multiparts;
                             if (rc == VIRUS)
-                                infected = TRUE;
+                                infected = true;
                             break;
 
                         case RELATED:
@@ -2304,8 +2268,8 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                          * Have a look to see if there's HTML code
                          * which will need scanning
                          */
-                        aMessage = NULL;
-                        assert(multiparts > 0);
+
+                        // It's okay if multiparts == 0
 
                         htmltextPart = getTextPart(messages, multiparts);
 
@@ -2322,7 +2286,6 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                              */
                             for (i = 0; i < multiparts; i++) {
                                 if (messageGetMimeType(messages[i]) == MULTIPART) {
-                                    aMessage     = messages[i];
                                     htmltextPart = i;
                                     break;
                                 }
@@ -2335,15 +2298,14 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
 #if HAVE_JSON
                             /* Send root HTML file for preclassification */
                             if (mctx->ctx->wrkproperty)
-                                (void)parseRootMHTML(mctx, aMessage, aText);
+                                (void)parseRootMHTML(mctx, messages[htmltextPart], aText);
 #endif
-                            rc = parseEmailBody(aMessage, aText, mctx, recursion_level + 1);
-                            if ((rc == OK) && aMessage) {
-                                assert(aMessage == messages[htmltextPart]);
-                                messageDestroy(aMessage);
+                            rc = parseEmailBody(messages[htmltextPart], aText, mctx, recursion_level + 1);
+                            if ((rc == OK) && messages[htmltextPart]) {
+                                messageDestroy(messages[htmltextPart]);
                                 messages[htmltextPart] = NULL;
                             } else if (rc == VIRUS) {
-                                infected = TRUE;
+                                infected = true;
                                 break;
                             }
                         }
@@ -2413,7 +2375,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                                                        messages, i, &rc, mctx,
                                                        messageIn, &aText, recursion_level + 1);
                             if (rc == VIRUS) {
-                                infected = TRUE;
+                                infected = true;
                                 break;
                             }
                             if (rc == MAXREC)
@@ -2602,7 +2564,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
         /* Look for a bounce in the text (non mime encoded) portion */
         const text *t;
         /* isBounceStart() is expensive, reduce the number of calls */
-        bool lookahead_definately_is_bounce = FALSE;
+        bool lookahead_definately_is_bounce = false;
 
         for (t = aText; t && (rc != VIRUS); t = t->t_next) {
             const line_t *l = t->t_line;
@@ -2611,19 +2573,18 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
             bool inheader;
 
             if (l == NULL) {
-                /* assert(lookahead_definately_is_bounce == FALSE) */
                 continue;
             }
 
             if (lookahead_definately_is_bounce)
-                lookahead_definately_is_bounce = FALSE;
+                lookahead_definately_is_bounce = false;
             else if (!isBounceStart(mctx, lineGetData(l)))
                 continue;
 
             lookahead = t->t_next;
             if (lookahead) {
                 if (isBounceStart(mctx, lineGetData(lookahead->t_line))) {
-                    lookahead_definately_is_bounce = TRUE;
+                    lookahead_definately_is_bounce = true;
                     /* don't save worthless header lines */
                     continue;
                 }
@@ -2704,14 +2665,14 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
             fileblobAddData(fb, (const unsigned char *)"Received: by clamd (bounce)\n", 28);
             fileblobSetCTX(fb, mctx->ctx);
 
-            inheader    = TRUE;
+            inheader    = true;
             topofbounce = NULL;
             do {
                 l = t->t_line;
 
                 if (l == NULL) {
                     if (inheader) {
-                        inheader    = FALSE;
+                        inheader    = false;
                         topofbounce = t;
                     }
                 } else {
@@ -2728,7 +2689,7 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                     s = lineGetData(l);
                     if (isBounceStart(mctx, s)) {
                         cli_dbgmsg("Found the start of another bounce candidate (%s)\n", s);
-                        lookahead_definately_is_bounce = TRUE;
+                        lookahead_definately_is_bounce = true;
                         break;
                     }
                 }
@@ -2791,14 +2752,14 @@ parseEmailBody(message *messageIn, text *textIn, mbox_ctx *mctx, unsigned int re
                         rc = VIRUS;
                     mctx->files++;
                 }
-                saveIt = FALSE;
+                saveIt = false;
             } else
                 /*
                  * Save the entire text portion,
                  * since it it may be an HTML file with
                  * a JavaScript virus or a phish
                  */
-                saveIt = TRUE;
+                saveIt = true;
 
             if (saveIt) {
                 cli_dbgmsg("Saving text part to scan, rc = %d\n",
@@ -3043,6 +3004,8 @@ boundaryEnd(const char *line, const char *boundary)
 
 /*
  * Initialise the various lookup tables
+ *
+ * Only initializes the tables if not already initialized.
  */
 static int
 initialiseTables(table_t **rfc821Table, table_t **subtypeTable)
@@ -3052,27 +3015,38 @@ initialiseTables(table_t **rfc821Table, table_t **subtypeTable)
     /*
      * Initialise the various look up tables
      */
-    *rfc821Table = tableCreate();
-    assert(*rfc821Table != NULL);
+    if (NULL == *rfc821Table) {
+        *rfc821Table = tableCreate();
+        if (*rfc821Table == NULL) {
+            return -1;
+        }
 
-    for (tableinit = rfc821headers; tableinit->key; tableinit++)
-        if (tableInsert(*rfc821Table, tableinit->key, tableinit->value) < 0) {
+        for (tableinit = rfc821headers; tableinit->key; tableinit++) {
+            if (tableInsert(*rfc821Table, tableinit->key, tableinit->value) < 0) {
+                tableDestroy(*rfc821Table);
+                *rfc821Table = NULL;
+                return -1;
+            }
+        }
+    }
+    if (NULL == *subtypeTable) {
+        *subtypeTable = tableCreate();
+        if (*subtypeTable == NULL) {
             tableDestroy(*rfc821Table);
             *rfc821Table = NULL;
             return -1;
         }
 
-    *subtypeTable = tableCreate();
-    assert(*subtypeTable != NULL);
-
-    for (tableinit = mimeSubtypes; tableinit->key; tableinit++)
-        if (tableInsert(*subtypeTable, tableinit->key, tableinit->value) < 0) {
-            tableDestroy(*rfc821Table);
-            tableDestroy(*subtypeTable);
-            *rfc821Table  = NULL;
-            *subtypeTable = NULL;
-            return -1;
+        for (tableinit = mimeSubtypes; tableinit->key; tableinit++) {
+            if (tableInsert(*subtypeTable, tableinit->key, tableinit->value) < 0) {
+                tableDestroy(*rfc821Table);
+                tableDestroy(*subtypeTable);
+                *rfc821Table  = NULL;
+                *subtypeTable = NULL;
+                return -1;
+            }
         }
+    }
 
     return 0;
 }
@@ -3169,7 +3143,7 @@ parseMimeHeader(message *m, const char *cmd, const table_t *rfc821Table, const c
     int commandNumber;
     size_t argCnt = 0;
 
-    *heuristicFound = FALSE;
+    *heuristicFound = false;
 
     cli_dbgmsg("parseMimeHeader: cmd='%s', arg='%s'\n", cmd, arg);
 
@@ -3400,16 +3374,18 @@ rfc822comments(const char *in, char *out)
     char *optr;
     int backslash, inquote, commentlevel;
 
-    if (in == NULL)
+    if (in == NULL || out == in) {
+        cli_errmsg("rfc822comments: Invalid parameters.n");
         return NULL;
+    }
 
-    if (strchr(in, '(') == NULL)
+    if (strchr(in, '(') == NULL) {
         return NULL;
+    }
 
-    assert(out != in);
-
-    while (isspace((const unsigned char)*in))
+    while (isspace((const unsigned char)*in)) {
         in++;
+    }
 
     if (out == NULL) {
         out = cli_malloc(strlen(in) + 1);
@@ -3536,7 +3512,10 @@ rfc2047(const char *in)
         }
         in += 2;
         ptr = strstr(enctext, "?=");
-        assert(ptr != NULL);
+        if (NULL == ptr) {
+            free(enctext);
+            break;
+        }
         *ptr = '\0';
         /*cli_dbgmsg("Need to decode '%s' with method '%c'\n", enctext, encoding);*/
 
@@ -3546,7 +3525,10 @@ rfc2047(const char *in)
             break;
         }
         messageAddStr(m, enctext);
+
         free(enctext);
+        enctext = NULL;
+
         switch (encoding) {
             case 'q':
                 messageSetEncoding(m, "quoted-printable");
@@ -3948,7 +3930,7 @@ checkURLs(message *mainMessage, mbox_ctx *mctx, mbox_status *rc, int is_html)
                  *    encapsulated so we should not access
                  *    the members directly
                  */
-                mainMessage->isInfected = TRUE;
+                mainMessage->isInfected = true;
                 *rc                     = VIRUS;
                 cli_dbgmsg("PH:Phishing found\n");
             }
@@ -4007,17 +3989,17 @@ usefulHeader(int commandNumber, const char *cmd)
         case CONTENT_TRANSFER_ENCODING:
         case CONTENT_DISPOSITION:
         case CONTENT_TYPE:
-            return TRUE;
+            return true;
         default:
             if (strcasecmp(cmd, "From") == 0)
-                return TRUE;
+                return true;
             if (strcasecmp(cmd, "Received") == 0)
-                return TRUE;
+                return true;
             if (strcasecmp(cmd, "De") == 0)
-                return TRUE;
+                return true;
     }
 
-    return FALSE;
+    return false;
 }
 
 /*
@@ -4095,17 +4077,17 @@ isBounceStart(mbox_ctx *mctx, const char *line)
     size_t len;
 
     if (line == NULL)
-        return FALSE;
+        return false;
     if (*line == '\0')
-        return FALSE;
+        return false;
     /*if((strncmp(line, "From ", 5) == 0) && !isalnum(line[5]))
-        return FALSE;
+        return false;
     if((strncmp(line, ">From ", 6) == 0) && !isalnum(line[6]))
-        return FALSE;*/
+        return false;*/
 
     len = strlen(line);
     if ((len < 6) || (len >= 72))
-        return FALSE;
+        return false;
 
     if ((memcmp(line, "From ", 5) == 0) ||
         (memcmp(line, ">From ", 6) == 0)) {
@@ -4121,10 +4103,10 @@ isBounceStart(mbox_ctx *mctx, const char *line)
         while (*++line != '\0');
 
         if (numSpaces < 6)
-            return FALSE;
+            return false;
         if (numDigits < 11)
-            return FALSE;
-        return TRUE;
+            return false;
+        return true;
     }
     return (bool)(cli_compare_ftm_file((const unsigned char *)line, len, mctx->ctx->engine) == CL_TYPE_MAIL);
 }
@@ -4136,7 +4118,7 @@ isBounceStart(mbox_ctx *mctx, const char *line)
 static bool
 exportBinhexMessage(mbox_ctx *mctx, message *m)
 {
-    bool infected = FALSE;
+    bool infected = false;
     fileblob *fb;
 
     if (messageGetEncoding(m) == NOENCODING)
@@ -4149,7 +4131,7 @@ exportBinhexMessage(mbox_ctx *mctx, message *m)
                    fileblobGetFilename(fb));
 
         if (fileblobScanAndDestroy(fb) == CL_VIRUS)
-            infected = TRUE;
+            infected = true;
         mctx->files++;
     } else
         cli_errmsg("Couldn't decode binhex file to %s\n", mctx->dir);
@@ -4270,7 +4252,7 @@ static const char *getEncTypeStr(encoding_type enctype)
 static message *
 do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, mbox_ctx *mctx, message *messageIn, text **tptr, unsigned int recursion_level)
 {
-    bool addToText = FALSE;
+    bool addToText = false;
     const char *dtype;
 #ifndef SAVE_TO_DISC
     message *body;
@@ -4284,20 +4266,10 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
         json_object *multiobj = cli_jsonarray(mctx->wrkobj, "Multipart");
         if (multiobj == NULL) {
             cli_errmsg("Cannot get multipart preclass array\n");
-            *rc = -1;
-            return mainMessage;
-        }
-
-        thisobj = messageGetJObj(aMessage);
-        if (thisobj == NULL) {
+        } else if (NULL == (thisobj = messageGetJObj(aMessage))) {
             cli_dbgmsg("Cannot get message preclass object\n");
-            *rc = -1;
-            return mainMessage;
-        }
-        if (cli_json_addowner(multiobj, thisobj, NULL, -1) != CL_SUCCESS) {
+        } else if (CL_SUCCESS != cli_json_addowner(multiobj, thisobj, NULL, -1)) {
             cli_errmsg("Cannot assign message preclass object to multipart preclass array\n");
-            *rc = -1;
-            return mainMessage;
         }
     }
 #endif
@@ -4322,7 +4294,13 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
         cli_jsonstr(thisobj, "MimeSubtype", messageGetMimeSubtype(aMessage));
         cli_jsonstr(thisobj, "EncodingType", getEncTypeStr(messageGetEncoding(aMessage)));
         cli_jsonstr(thisobj, "Disposition", messageGetDispositionType(aMessage));
-        cli_jsonstr(thisobj, "Filename", messageHasFilename(aMessage) ? messageGetFilename(aMessage) : "(inline)");
+        if (messageHasFilename(aMessage)) {
+            char *filename = messageGetFilename(aMessage);
+            cli_jsonstr(thisobj, "Filename", filename);
+            free(filename);
+        } else {
+            cli_jsonstr(thisobj, "Filename", "(inline)");
+        }
     }
 #endif
 
@@ -4349,11 +4327,10 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
                     cli_dbgmsg("Found binhex message in multipart/mixed non mime part\n");
                     if (exportBinhexMessage(mctx, aMessage))
                         *rc = VIRUS;
-                    assert(aMessage == messages[i]);
                     messageReset(messages[i]);
                 }
             }
-            addToText = TRUE;
+            addToText = true;
             if (messageGetBody(aMessage) == NULL)
                 /*
                  * No plain text version
@@ -4383,7 +4360,7 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
                      */
                     if (!messageHasFilename(aMessage)) {
                         cli_dbgmsg("Adding part to main message\n");
-                        addToText = TRUE;
+                        addToText = true;
                     } else
                         cli_dbgmsg("Treating inline as attachment\n");
                 } else {
@@ -4418,7 +4395,6 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
                          * itself has been encoded
                          */
                         cli_dbgmsg("Unencoded multipart/message will not be scanned\n");
-                        assert(aMessage == messages[i]);
                         messageDestroy(messages[i]);
                         messages[i] = NULL;
                         return mainMessage;
@@ -4428,10 +4404,7 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
                     cli_dbgmsg("Encoded multipart/message will be scanned\n");
             }
 #endif
-#if 0
-            messageAddStrAtTop(aMessage,
-                "Received: by clamd (message/rfc822)");
-#endif
+
 #ifdef SAVE_TO_DISC
             /*
              * Save this embedded message
@@ -4439,7 +4412,6 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
              */
             if (saveTextPart(mctx, aMessage, 1) == CL_VIRUS)
                 *rc = VIRUS;
-            assert(aMessage == messages[i]);
             messageDestroy(messages[i]);
             messages[i] = NULL;
 #else
@@ -4457,7 +4429,6 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
              * message as a message.
              * This can save a lot of memory
              */
-            assert(aMessage == messages[i]);
             messageDestroy(messages[i]);
             messages[i]  = NULL;
 #if HAVE_JSON
@@ -4492,7 +4463,6 @@ do_multipart(message *mainMessage, message **messages, int i, mbox_status *rc, m
                  */
                 *rc = parseEmailBody(aMessage, *tptr, mctx, recursion_level + 1);
                 cli_dbgmsg("Finished recursion, rc = %d\n", (int)*rc);
-                assert(aMessage == messages[i]);
                 messageDestroy(messages[i]);
                 messages[i] = NULL;
             } else {
@@ -4596,10 +4566,10 @@ next_is_folded_header(const text *t)
     const char *data, *ptr;
 
     if (next == NULL)
-        return FALSE;
+        return false;
 
     if (next->t_line == NULL)
-        return FALSE;
+        return false;
 
     data = lineGetData(next->t_line);
 
@@ -4608,7 +4578,7 @@ next_is_folded_header(const text *t)
      * previous entry.
      */
     if (isblank(data[0]))
-        return TRUE;
+        return true;
 
     if (strchr(data, '=') == NULL)
         /*
@@ -4616,7 +4586,7 @@ next_is_folded_header(const text *t)
          *    Content-Type: text/html;
          *    Content-Transfer-Encoding: quoted-printable
          */
-        return FALSE;
+        return false;
 
     /*
      * Some are broken and don't fold headers lines
@@ -4640,16 +4610,16 @@ next_is_folded_header(const text *t)
     while (--ptr > data)
         switch (*ptr) {
             case ';':
-                return TRUE;
+                return true;
             case '\n':
             case ' ':
             case '\r':
             case '\t':
                 continue; /* white space at end of line */
             default:
-                return FALSE;
+                return false;
         }
-    return FALSE;
+    return false;
 }
 
 /*
@@ -4663,11 +4633,11 @@ newline_in_header(const char *line)
     cli_dbgmsg("newline_in_header, check \"%s\"\n", line);
 
     if (strncmp(line, "Message-Id: ", 12) == 0)
-        return TRUE;
+        return true;
     if (strncmp(line, "Date: ", 6) == 0)
-        return TRUE;
+        return true;
 
     cli_dbgmsg("newline_in_header, returning \"%s\"\n", line);
 
-    return FALSE;
+    return false;
 }

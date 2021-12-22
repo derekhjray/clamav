@@ -235,6 +235,13 @@ Example
 # Default: no
 #LeaveTemporaryFiles yes
 
+# Record metadata about the file being scanned.
+# Scan metadata is useful for file analysis purposes and for debugging scan behavior.
+# The JSON metadata will be printed after the scan is complete if Debug is enabled.
+# A metadata.json file will be written to the scan temp directory if LeaveTemporaryFiles is enabled.
+# Default: no
+#GenerateMetadataJson yes
+
 # Permit use of the ALLMATCHSCAN command. If set to no, clamd will reject
 # any ALLMATCHSCAN command as invalid.
 # Default: yes
@@ -285,7 +292,7 @@ Example
 # at the end of a scan. If an archive contains both a heuristically detected
 # virus/phish, and a real malware, the real malware will be reported
 #
-# Keep this disabled if you intend to handle "*.Heuristics.*" viruses
+# Keep this disabled if you intend to handle "Heuristics.*" viruses
 # differently from "real" malware.
 # If a non-heuristically-detected virus (signature-based) is found first,
 # the scan is interrupted immediately, regardless of this config option.
@@ -535,7 +542,7 @@ Example
 # file, all files within it will also be scanned. This options specifies how
 # deeply the process should be continued.
 # Note: setting this limit too high may result in severe damage to the system.
-# Default: 16
+# Default: 17
 #MaxRecursion 10
 
 # Number of files to be scanned within an archive, a document, or any other
@@ -641,7 +648,7 @@ Example
 #PCREMaxFileSize 100M
 
 # When AlertExceedsMax is set, files exceeding the MaxFileSize, MaxScanSize, or
-# MaxRecursion limit will be flagged with the virus
+# MaxRecursion limit will be flagged with the virus name starting with
 # "Heuristics.Limits.Exceeded".
 # Default: no
 #AlertExceedsMax yes

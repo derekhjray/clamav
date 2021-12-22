@@ -35,6 +35,8 @@ class TC(testcase.TestCase):
         TC.path_www.mkdir()
 
         TC.path_db = Path(TC.path_tmp, 'database')
+        TC.path_db.mkdir()
+
         TC.freshclam_pid = Path(TC.path_tmp, 'freshclam-test.pid')
         TC.freshclam_config = Path(TC.path_tmp, 'freshclam-test.conf')
 
@@ -181,6 +183,19 @@ class TC(testcase.TestCase):
         ]
         self.verify_output(output.out, expected=expected_results)
 
+        command = '{valgrind} {valgrind_args} {freshclam} --config-file={freshclam_config} --update-db=daily'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, freshclam=TC.freshclam, freshclam_config=TC.freshclam_config
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # "fine" (on cooldown, refusing to try again for now)
+
+        expected_results = [
+            'FreshClam previously received error code 429 or 403',
+            'You are still on cool-down until after',
+        ]
+        self.verify_output(output.out, expected=expected_results)
+
     def test_freshclam_03_http_403_daemonized(self):
         self.step_name('Verify correct behavior when receiving 403 (forbidden) and daemonized')
 
@@ -292,6 +307,63 @@ class TC(testcase.TestCase):
         '''.format(
             freshclam_pid=TC.freshclam_pid,
             path_db=TC.path_db,
+            port=TC.mock_mirror_port,
+            user=getpass.getuser(),
+        ))
+        command = '{valgrind} {valgrind_args} {freshclam} --config-file={freshclam_config} --update-db=test'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, freshclam=TC.freshclam, freshclam_config=TC.freshclam_config
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # success
+
+        expected_results = [
+            'test.cld updated',
+        ]
+        unexpected_results = [
+            'already up-to-date'
+        ]
+        self.verify_output(output.out, expected=expected_results, unexpected=unexpected_results)
+
+    @unittest.skipIf(operating_system != 'windows', 'This test is specific to Windows.')
+    def test_freshclam_05_cdiff_update_UNC(self):
+        # This is a regression test for https://github.com/Cisco-Talos/clamav/pull/226
+        self.step_name('Verify that freshclam can update from an older CVD to a newer with CDIFF patches with UNC paths')
+
+        # start with this CVD
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-1.cvd'), str(TC.path_db / 'test.cvd'))
+
+        # advertise this CVD (by sending the header response to Range requests)
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-6.cvd'), str(TC.path_www / 'test.cvd.advertised'))
+
+        # using these CDIFFs
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-2.cdiff'), str(TC.path_www))
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-3.cdiff'), str(TC.path_www))
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-4.cdiff'), str(TC.path_www))
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-5.cdiff'), str(TC.path_www))
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-6.cdiff'), str(TC.path_www))
+
+        handler = partial(WebServerHandler_WWW, TC.path_www)
+        TC.mock_mirror = Process(target=mock_database_mirror, args=(handler, TC.mock_mirror_port))
+        TC.mock_mirror.start()
+
+        if TC.freshclam_config.exists():
+            os.remove(str(TC.freshclam_config))
+
+        path_db_unc = str(TC.path_db).replace('C:\\', '\\\\localhost\\c$\\').replace('D:\\', '\\\\localhost\\d$\\').replace('E:\\', '\\\\localhost\\e$\\')
+
+        TC.freshclam_config.write_text('''
+            DatabaseMirror http://localhost:{port}
+            DNSDatabaseInfo no
+            PidFile {freshclam_pid}
+            LogVerbose yes
+            LogFileMaxSize 0
+            LogTime yes
+            DatabaseDirectory {path_db}
+            DatabaseOwner {user}
+        '''.format(
+            freshclam_pid=TC.freshclam_pid,
+            path_db=path_db_unc,
             port=TC.mock_mirror_port,
             user=getpass.getuser(),
         ))
@@ -461,18 +533,25 @@ class TC(testcase.TestCase):
     def test_freshclam_07_no_cdiff_out_of_date_cvd(self):
         self.step_name('Verify that freshclam will properly handle an out-of-date CVD update after a zero-byte CDIFF')
 
-        # start with this CVD
-        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-3.cvd'), str(TC.path_db / 'test.cvd'))
+        # start with CVD 1
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-1.cvd'), str(TC.path_db / 'test.cvd'))
 
-        # advertise this CVD (by sending the header response to Range requests)
+        # advertise CVD 6 (by sending the header response to Range requests)
         shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-6.cvd'), str(TC.path_www / 'test.cvd.advertised'))
 
-        # serve this CVD when requested instead of the advertised one
+        # Serve the patches 2.
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-2.cdiff'), str(TC.path_www))
+
+        # Serve a zero-byte file instead of test-3.cdiff. This should trigger a whole CVD download.
+        with (TC.path_www / 'test-3.cdiff').open('w') as fp:
+            pass
+
+        # Serve CVD 5 when test.cvd is requested instead of 6 (the advertised one). This should trigger an incremental update, starting a test-4.cvd + patches 5-6.
         shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-5.cvd'), str(TC.path_www / 'test.cvd.served'))
 
-        # Serve a zero-byte test-4.cdiff instead of the real test-4.cdiff. This should trigger a whole CVD download.
-        with (TC.path_www / 'test-4.cdiff').open('w') as fp:
-            pass
+        # Serve the patches 5 - 6. Patch 4 should never be requested.
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-5.cdiff'), str(TC.path_www))
+        shutil.copy(str(TC.path_source / 'unit_tests' / 'input' / 'freshclam_testfiles' /'test-6.cdiff'), str(TC.path_www))
 
         handler = partial(WebServerHandler_WWW, TC.path_www)
         TC.mock_mirror = Process(target=mock_database_mirror, args=(handler, TC.mock_mirror_port))
@@ -496,6 +575,10 @@ class TC(testcase.TestCase):
             port=TC.mock_mirror_port,
             user=getpass.getuser(),
         ))
+
+        #
+        # 1st attempt
+        #
         command = '{valgrind} {valgrind_args} {freshclam} --config-file={freshclam_config} --update-db=test'.format(
             valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, freshclam=TC.freshclam, freshclam_config=TC.freshclam_config
         )
@@ -504,10 +587,53 @@ class TC(testcase.TestCase):
         assert output.ec == 0  # success
 
         expected_results = [
-            'Incremental updates either failed or are disabled, so we\'ll have to settle for a slightly out-of-date database.',
+            'Received an older test CVD than was advertised. Incremental updates either failed or ',
+            'test.cvd updated \\(version: 5',
         ]
         unexpected_results = [
             'already up-to-date'
+        ]
+        self.verify_output(output.out, expected=expected_results, unexpected=unexpected_results)
+
+        #
+        # 2nd attempt
+        #
+        command = '{valgrind} {valgrind_args} {freshclam} --config-file={freshclam_config} --update-db=test'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, freshclam=TC.freshclam, freshclam_config=TC.freshclam_config
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # success
+
+        expected_results = [
+            'test.cld updated \\(version: 6',
+        ]
+        unexpected_results = [
+            'already up-to-date',
+            'Received an older test CVD than was advertised',
+            'cdiff_apply: lseek\\(desc, -350, SEEK_END\\) failed',
+            'Incremental update failed, trying to download test.cvd',
+        ]
+        self.verify_output(output.out, expected=expected_results, unexpected=unexpected_results)
+
+        #
+        # 3rd attempt
+        #
+        command = '{valgrind} {valgrind_args} {freshclam} --config-file={freshclam_config} --update-db=test'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, freshclam=TC.freshclam, freshclam_config=TC.freshclam_config
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # success
+
+        expected_results = [
+            'already up-to-date',
+        ]
+        unexpected_results = [
+            'test.cld updated \\(version: 6',
+            'Received an older test CVD than was advertised',
+            'cdiff_apply: lseek\\(desc, -350, SEEK_END\\) failed',
+            'Incremental update failed, trying to download test.cvd',
         ]
         self.verify_output(output.out, expected=expected_results, unexpected=unexpected_results)
 
@@ -536,20 +662,16 @@ class WebServerHandler_02(BaseHTTPRequestHandler):
             #       someone wants to run these tests without internet access.
             self.send_response(206) # Partial file
             self.send_header('Content-type', 'application/octet-stream')
-            self.end_headers()
             page =b'ClamAV-VDB:21 Sep 2020 09-52 -0400:25934:4320797:63:2ee5a3e4285b496656117ae3809b6040:gMj7NXhxfew0+bToOF8GX7xPHPGXhOSD+CSuf3E7SHhLmVZCJUVhPS01h42I0W1py7L+BmM2yhPIW8t/oGPFw8+hdD4DU/ceET15wnPWU4lsJJeRkl46Z4D8INe9Oq36ixT1xEIkERogPE3qr6wszmjT2Xe2VcmydTXN2GfPQX:raynman:1600696324                                                                                                                                                                                                                                               '
-            self.wfile.write(page)
-
         else:
             # Send the 403 FORBIDDEN header.
             self.send_response(403) # Forbidden (blocked)
             self.send_header('Content-type', 'text/html')
-            self.end_headers()
-
             page= b'''<html><body>
                     No CVD for you!
                     </body></html>'''
-            self.wfile.write(page)
+        self.end_headers()
+        self.wfile.write(page)
 
 class WebServerHandler_04(BaseHTTPRequestHandler):
     '''
@@ -563,21 +685,17 @@ class WebServerHandler_04(BaseHTTPRequestHandler):
             #       someone wants to run these tests without internet access.
             self.send_response(206) # Partial file
             self.send_header('Content-type', 'application/octet-stream')
-            self.end_headers()
             page =b'ClamAV-VDB:21 Sep 2020 09-52 -0400:25934:4320797:63:2ee5a3e4285b496656117ae3809b6040:gMj7NXhxfew0+bToOF8GX7xPHPGXhOSD+CSuf3E7SHhLmVZCJUVhPS01h42I0W1py7L+BmM2yhPIW8t/oGPFw8+hdD4DU/ceET15wnPWU4lsJJeRkl46Z4D8INe9Oq36ixT1xEIkERogPE3qr6wszmjT2Xe2VcmydTXN2GfPQX:raynman:1600696324                                                                                                                                                                                                                                               '
-            self.wfile.write(page)
-
         else:
             # Send the 429 Too-Many-Requests header.
             self.send_response(429) # Too-Many-Requests (rate limiting)
             self.send_header('Content-type', 'text/html')
             self.send_header('Retry-After', '60') # Try again in a minute ;-)!
-            self.end_headers()
-
             page= b'''<html><body>
                     Retry later please!
                     </body></html>'''
-            self.wfile.write(page)
+        self.end_headers()
+        self.wfile.write(page)
 
 class WebServerHandler_WWW(BaseHTTPRequestHandler):
     '''

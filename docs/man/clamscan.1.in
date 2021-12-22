@@ -46,7 +46,7 @@ Skip printing OK files
 Sound bell on virus detection.
 .TP
 \fB\-\-tempdir=DIRECTORY\fR
-Create temporary files in DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Create temporary files in DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-leave\-temps\fR
 Do not remove temporary files.
@@ -85,10 +85,10 @@ Scan files listed line by line in FILE.
 Remove infected files. \fBBe careful!\fR
 .TP
 \fB\-\-move=DIRECTORY\fR
-Move infected files into DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Move infected files into DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-copy=DIRECTORY\fR
-Copy infected files into DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Copy infected files into DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-exclude=REGEX, \-\-exclude\-dir=REGEX\fR
 Don't scan file/directory names matching regular expression. These options can be used multiple times.
@@ -136,13 +136,13 @@ Scan mail files. If you turn off this option, the original files will still be s
 Enable email signature-based phishing detection.
 .TP
 \fB\-\-phishing\-scan\-urls[=yes(*)/no]\fR
-Enable URL signature-based phishing detection (Phishing.Heuristics.Email.*)
+Enable URL signature-based phishing detection (Heuristics.Phishing.Email.*)
 .TP
 \fB\-\-heuristic\-alerts[=yes(*)/no]\fR
 In some cases (eg. complex malware, exploits in graphic files, and others), ClamAV uses special algorithms to provide accurate detection. This option can be used to control the algorithmic detection.
 .TP
 \fB\-\-heuristic\-scan\-precedence[=yes/no(*)]\fR
-Allow heuristic match to take precedence. When enabled, if a heuristic scan (such as phishingScan) detects a possible virus/phish it will stop scan immediately. Recommended, saves CPU scan-time. When disabled, virus/phish detected by heuristic scans will be reported only at the end of a scan. If an archive contains both a heuristically detected  virus/phish, and a real malware, the real malware will be reported Keep this disabled if you intend to handle "*.Heuristics.*" viruses  differently from "real" malware. If a non-heuristically-detected virus (signature-based) is found first,  the scan is interrupted immediately, regardless of this config option.
+Allow heuristic match to take precedence. When enabled, if a heuristic scan (such as phishingScan) detects a possible virus/phish it will stop scan immediately. Recommended, saves CPU scan-time. When disabled, virus/phish detected by heuristic scans will be reported only at the end of a scan. If an archive contains both a heuristically detected  virus/phish, and a real malware, the real malware will be reported Keep this disabled if you intend to handle "Heuristics.*" viruses  differently from "real" malware. If a non-heuristically-detected virus (signature-based) is found first,  the scan is interrupted immediately, regardless of this config option.
 .TP
 \fB\-\-normalize[=yes(*)/no]\fR
 Normalize (compress whitespace, downcase, etc.) html, script, and text files. Use normalize=no for yara compatibility.
@@ -220,7 +220,7 @@ Extract and scan at most #n bytes from each archive. The size the archive plus t
 Extract at most #n files from each scanned file (when this is an archive, a document or another kind of container). This option protects your system against DoS attacks (default: 10000)
 .TP
 \fB\-\-max\-recursion=#n\fR
-Set archive recursion level limit. This option protects your system against DoS attacks (default: 16).
+Set archive recursion level limit. This option protects your system against DoS attacks (default: 17).
 .TP
 \fB\-\-max\-dir\-recursion=#n\fR
 Maximum depth directories are scanned at (default: 15).
@@ -261,6 +261,13 @@ Maximum size file to perform PCRE subsig matching (default: 25 MB, max: <4 GB).
 .TP
 \fB\-\-disable\-cache\fR
 Disable caching and cache checks for hash sums of scanned files.
+
+.SH "ENVIRONMENT VARIABLES"
+.LP
+clamscan uses the following environment variables:
+.TP
+LD_LIBRARY_PATH - May be used on startup to find the libclamunrar_iface shared library module to enable RAR archive support.
+
 .SH "EXAMPLES"
 .LP
 .TP

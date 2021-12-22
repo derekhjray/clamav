@@ -20,22 +20,33 @@ target_sources( freshclam-bin
         notify.c
         notify.h )
 if(WIN32)
-    target_sources( freshclam-bin PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/freshclam.rc )
+    target_sources( freshclam-bin
+        PRIVATE
+            ${CMAKE_SOURCE_DIR}/win32/res/freshclam.rc
+            ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 set_target_properties( freshclam-bin PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( freshclam-bin PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries(freshclam-bin
     PRIVATE
         ClamAV::libfreshclam
         ClamAV::libclamav
         ClamAV::common )
 if(WIN32)
-    install(TARGETS freshclam-bin DESTINATION .)
+    install(TARGETS freshclam-bin DESTINATION . COMPONENT programs)
 else()
-    install(TARGETS freshclam-bin DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS freshclam-bin DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()
 
 # Install an empty database directory
-INSTALL(CODE "FILE(MAKE_DIRECTORY \${ENV}\${CMAKE_INSTALL_PREFIX}/\${DATABASE_DIRECTORY})")
+INSTALL(CODE "FILE(MAKE_DIRECTORY \${ENV}\${CMAKE_INSTALL_PREFIX}/\${DATABASE_DIRECTORY})" COMPONENT programs)
 
 # Now we rename freshclam-bin executable to freshclam using target properties
 set_target_properties( freshclam-bin
@@ -47,5 +58,6 @@ if(SYSTEMD_FOUND)
         ${CMAKE_CURRENT_BINARY_DIR}/clamav-freshclam.service @ONLY)
     install(
         FILES ${CMAKE_CURRENT_BINARY_DIR}/clamav-freshclam.service
-        DESTINATION ${SYSTEMD_UNIT_DIR})
+        DESTINATION ${SYSTEMD_UNIT_DIR}
+        COMPONENT programs)
 endif()

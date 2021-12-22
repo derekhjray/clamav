@@ -6,13 +6,6 @@
 # hadolint ignore=DL3007  latest is the latest stable for alpine
 FROM index.docker.io/library/alpine:latest AS builder
 
-LABEL maintainer="ClamAV bugs <clamav-bugs@external.cisco.com>"
-
-EXPOSE 3310
-EXPOSE 7357
-
-HEALTHCHECK CMD "clamdcheck.sh"
-
 WORKDIR /src
 
 COPY . /src/
@@ -39,6 +32,8 @@ RUN apk add --no-cache \
         pcre2-dev \
         py3-pytest \
         zlib-dev \
+        rust \
+        cargo \
     && \
     mkdir -p "./build" && cd "./build" && \
     cmake .. \
@@ -87,6 +82,11 @@ RUN apk add --no-cache \
 
 FROM index.docker.io/library/alpine:latest
 
+LABEL maintainer="ClamAV bugs <clamav-bugs@external.cisco.com>"
+
+EXPOSE 3310
+EXPOSE 7357
+
 RUN apk add --no-cache \
         fts \
         json-c \
@@ -110,5 +110,7 @@ COPY --from=builder "/sniper" "/"
 COPY --from=builder "/sniper" "/sniper"
 COPY "./dockerfiles/clamdcheck.sh" "/usr/local/bin/"
 COPY "./dockerfiles/docker-entrypoint.sh" "/init"
+
+HEALTHCHECK CMD "clamdcheck.sh"
 
 ENTRYPOINT [ "/init" ]

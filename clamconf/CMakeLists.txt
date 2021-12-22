@@ -22,12 +22,20 @@ target_include_directories( clamconf
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
 )
 set_target_properties( clamconf PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( clamconf PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries( clamconf
     PRIVATE
         ClamAV::libclamav
         ClamAV::common )
 if(WIN32)
-    install(TARGETS clamconf DESTINATION .)
+    install(TARGETS clamconf DESTINATION . COMPONENT programs)
 else()
-    install(TARGETS clamconf DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS clamconf DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()

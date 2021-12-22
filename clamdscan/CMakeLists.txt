@@ -20,18 +20,29 @@ target_sources( clamdscan
         proto.c
         proto.h )
 if(WIN32)
-    target_sources( clamdscan PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/clamdscan.rc )
+    target_sources( clamdscan
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/win32/res/clamdscan.rc
+        ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 target_include_directories( clamdscan
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
 )
 set_target_properties( clamdscan PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( clamdscan PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries( clamdscan
     PRIVATE
         ClamAV::libclamav
         ClamAV::common )
 if(WIN32)
-    install(TARGETS clamdscan DESTINATION .)
+    install(TARGETS clamdscan DESTINATION . COMPONENT programs)
 else()
-    install(TARGETS clamdscan DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS clamdscan DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()

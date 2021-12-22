@@ -273,6 +273,14 @@ Do not remove temporary files (for debugging purpose).
 .br
 Default: no
 .TP
+\fBGenerateMetadataJson BOOL\fR
+Record metadata about the file being scanned.
+Scan metadata is useful for file analysis purposes and for debugging scan behavior.
+The JSON metadata will be printed after the scan is complete if Debug is enabled.
+A metadata.json file will be written to the scan temp directory if LeaveTemporaryFiles is enabled.
+.br
+Default: no
+.TP
 \fBUser STRING\fR
 Run the daemon as a specified user (the process must be started by root).
 .br
@@ -390,7 +398,7 @@ Enable email signature-based phishing detection.
 Default: yes
 .TP
 \fBPhishingScanURLs BOOL\fR
-Enable URL signature-based phishing detection (Phishing.Heuristics.Email.*)
+Enable URL signature-based phishing detection (Heuristics.Phishing.Email.*)
 .br
 Default: yes
 .TP
@@ -504,7 +512,7 @@ Alert on OLE2 files containing VBA macros (Heuristics.OLE2.ContainsMacros).
 Default: no
 .TP
 \fBAlertExceedsMax BOOL\fR
-Alert on files that exceed max file size, max scan size, or max recursion limit (Heuristics.Limits.Exceeded).
+When AlertExceedsMax is set, files exceeding the MaxFileSize, MaxScanSize, or MaxRecursion limit will be flagged with the virus name starting with "Heuristics.Limits.Exceeded".
 .br
 Default: no
 .TP
@@ -533,7 +541,7 @@ Default: no
 \fBMaxScanTime SIZE\fR
 This option sets the maximum amount of time a scan may take to complete. The value is in milliseconds. The value of 0 disables the limit. \fBWARNING: disabling this limit or setting it too high may result allow scanning of certain files to lock up the scanning process/threads resulting in a Denial of Service.\fR
 .br
-Default: 12000
+Default: 120000
 .TP
 \fBMaxScanSize SIZE\fR
 Sets the maximum amount of data to be scanned for each input file. Archives and other containers are recursively extracted and scanned up to this value. The size of an archive plus the sum of the sizes of all files within archive count toward the scan size. For example, a 1M uncompressed archive containing a single 1M inner file counts as 2M toward the max scan size. \fBWarning: disabling this limit or setting it too high may result in severe damage to the system.\fR
@@ -548,7 +556,7 @@ Default: 25M
 \fBMaxRecursion NUMBER\fR
 Nested archives are scanned recursively, e.g. if a Zip archive contains a RAR file, all files within it will also be scanned. This options specifies how deeply the process should be continued. \fBWarning: setting this limit too high may result in severe damage to the system.\fR
 .br
-Default: 16
+Default: 17
 .TP
 \fBMaxFiles NUMBER\fR
 Number of files to be scanned within an archive, a document, or any other kind of container. \fBWarning: disabling this limit or setting it too high may result in severe damage to the system.\fR
@@ -765,7 +773,7 @@ Default: no
 All options expressing a size are limited to max 4GB. Values in excess will be reset to the maximum.
 .SH "FILES"
 .LP
-@CFGDIR@/clamd.conf
+@CONFDIR@/clamd.conf
 .SH "AUTHORS"
 .LP
 Tomasz Kojm <tkojm@clamav.net>, Kevin Lin <klin@sourcefire.com>

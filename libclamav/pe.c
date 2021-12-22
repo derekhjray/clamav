@@ -585,7 +585,7 @@ static int scan_pe_mdb(cli_ctx *ctx, struct cli_exe_section *exe_section)
     }
 
     /* Generate hashes */
-    cli_hashsect(*ctx->fmap, exe_section, hashset, foundsize, foundwild);
+    cli_hashsect(ctx->fmap, exe_section, hashset, foundsize, foundwild);
 
     /* Print hash */
     if (cli_debug_flag) {
@@ -595,7 +595,7 @@ static int scan_pe_mdb(cli_ctx *ctx, struct cli_exe_section *exe_section)
                        exe_section->rsz, md5[0], md5[1], md5[2], md5[3], md5[4], md5[5], md5[6], md5[7],
                        md5[8], md5[9], md5[10], md5[11], md5[12], md5[13], md5[14], md5[15]);
         } else if (cli_always_gen_section_hash) {
-            const void *hashme = fmap_need_off_once(*ctx->fmap, exe_section->raw, exe_section->rsz);
+            const void *hashme = fmap_need_off_once(ctx->fmap, exe_section->raw, exe_section->rsz);
             if (!(hashme)) {
                 cli_errmsg("scan_pe_mdb: unable to read section data\n");
                 ret = CL_EREAD;
@@ -2247,7 +2247,7 @@ static int validate_impname(const char *name, uint32_t length, int dll)
 static inline int hash_impfns(cli_ctx *ctx, void **hashctx, uint32_t *impsz, struct pe_image_import_descriptor *image, const char *dllname, struct cli_exe_info *peinfo, int *first)
 {
     uint32_t thuoff = 0, offset;
-    fmap_t *map     = *ctx->fmap;
+    fmap_t *map     = ctx->fmap;
     size_t dlllen = 0, fsize = map->len;
     unsigned int err = 0;
     int num_fns = 0, ret = CL_SUCCESS;
@@ -2409,16 +2409,17 @@ static inline int hash_impfns(cli_ctx *ctx, void **hashctx, uint32_t *impsz, str
     return CL_SUCCESS;
 }
 
-static unsigned int hash_imptbl(cli_ctx *ctx, unsigned char **digest, uint32_t *impsz, int *genhash, struct cli_exe_info *peinfo)
+static cl_error_t hash_imptbl(cli_ctx *ctx, unsigned char **digest, uint32_t *impsz, int *genhash, struct cli_exe_info *peinfo)
 {
     struct pe_image_import_descriptor *image;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
     size_t left, fsize = map->len;
     uint32_t impoff, offset;
     const char *impdes, *buffer;
     void *hashctx[CLI_HASH_AVAIL_TYPES];
     enum CLI_HASH_TYPE type;
-    int nimps = 0, ret = CL_SUCCESS;
+    int nimps      = 0;
+    cl_error_t ret = CL_SUCCESS;
     unsigned int err;
     int first = 1;
 
@@ -2776,7 +2777,7 @@ int cli_scanpe(cli_ctx *ctx)
         pe_json = get_pe_property(ctx);
     }
 #endif
-    map   = *ctx->fmap;
+    map   = ctx->fmap;
     fsize = map->len;
 
     struct cli_exe_info _peinfo;
@@ -3482,7 +3483,7 @@ int cli_scanpe(cli_ctx *ctx)
 
             CLI_UNPSIZELIMITS("cli_scanpe: Upack", MAX(MAX(dsize, ssize), peinfo->sections[1].ursz));
 
-            if (!CLI_ISCONTAINED(0, dsize, peinfo->sections[1].rva - off, peinfo->sections[1].ursz) || (upack && !CLI_ISCONTAINED(0, dsize, peinfo->sections[2].rva - peinfo->sections[0].rva, ssize)) || ssize > dsize) {
+            if (!CLI_ISCONTAINED_0_TO(dsize, peinfo->sections[1].rva - off, peinfo->sections[1].ursz) || (upack && !CLI_ISCONTAINED_0_TO(dsize, peinfo->sections[2].rva - peinfo->sections[0].rva, ssize)) || ssize > dsize) {
                 cli_dbgmsg("cli_scanpe: Upack: probably malformed pe-header, skipping to next unpacker\n");
                 break;
             }
@@ -4451,9 +4452,9 @@ int cli_scanpe(cli_ctx *ctx)
     return CL_CLEAN;
 }
 
-int cli_pe_targetinfo(fmap_t *map, struct cli_exe_info *peinfo)
+int cli_pe_targetinfo(cli_ctx *ctx, struct cli_exe_info *peinfo)
 {
-    return cli_peheader(map, peinfo, CLI_PEHEADER_OPT_EXTRACT_VINFO, NULL);
+    return cli_peheader(ctx->fmap, peinfo, CLI_PEHEADER_OPT_EXTRACT_VINFO, NULL);
 }
 
 /** Parse the PE header and, if successful, populate peinfo
@@ -4482,7 +4483,7 @@ int cli_pe_targetinfo(fmap_t *map, struct cli_exe_info *peinfo)
  *                                          file, remove it from
  *                                          peinfo->sections. Otherwise, the
  *                                          rsz is just set to 0 for it.
- * @param ctx The overaching cli_ctx.  This is required with certain opts, but
+ * @param ctx The overarching cli_ctx.  This is required with certain opts, but
  *            optional otherwise.
  * @return If the PE header is parsed successfully, CLI_PEHEADER_RET_SUCCESS
  *         is returned. If it seems like the PE is broken,
@@ -5174,12 +5175,12 @@ int cli_peheader(fmap_t *map, struct cli_exe_info *peinfo, uint32_t opts, cli_ct
             } else {
 
                 /* If a section is truncated, adjust it's size value */
-                if (!CLI_ISCONTAINED(0, fsize, section->raw, section->rsz)) {
+                if (!CLI_ISCONTAINED_0_TO(fsize, section->raw, section->rsz)) {
                     cli_dbgmsg("cli_peheader: PE Section %d raw+rsz extends past the end of the file by %lu bytes\n", section_pe_idx, (section->raw + section->rsz) - fsize);
                     section->rsz = fsize - section->raw;
                 }
 
-                if (!CLI_ISCONTAINED(0, fsize, section->uraw, section->ursz)) {
+                if (!CLI_ISCONTAINED_0_TO(fsize, section->uraw, section->ursz)) {
                     cli_dbgmsg("cli_peheader: PE Section %d uraw+ursz extends past the end of the file by %lu bytes\n", section_pe_idx, (section->uraw + section->ursz) - fsize);
                     section->ursz = fsize - section->uraw;
                 }
@@ -5546,7 +5547,7 @@ cl_error_t cli_check_auth_header(cli_ctx *ctx, struct cli_exe_info *peinfo)
     size_t at;
     unsigned int i, j, hlen;
     size_t fsize;
-    fmap_t *map   = *ctx->fmap;
+    fmap_t *map   = ctx->fmap;
     void *hashctx = NULL;
     struct pe_certificate_hdr cert_hdr;
     struct cli_mapped_region *regions = NULL;
@@ -5571,7 +5572,7 @@ cl_error_t cli_check_auth_header(cli_ctx *ctx, struct cli_exe_info *peinfo)
         peinfo = &_peinfo;
         cli_exe_info_init(peinfo, 0);
 
-        if (cli_peheader(*ctx->fmap, peinfo, CLI_PEHEADER_OPT_NONE, NULL) != CLI_PEHEADER_RET_SUCCESS) {
+        if (cli_peheader(ctx->fmap, peinfo, CLI_PEHEADER_OPT_NONE, NULL) != CLI_PEHEADER_RET_SUCCESS) {
             cli_exe_info_destroy(peinfo);
             return CL_EFORMAT;
         }
@@ -5799,7 +5800,7 @@ finish:
  *  - If a section exists completely outside of the file, it won't be included
  *    in the list of sections, and nsections will be adjusted accordingly.
  */
-int cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *hashes)
+cl_error_t cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *hashes)
 {
     unsigned int i;
     struct cli_exe_info _peinfo;
@@ -5825,7 +5826,7 @@ int cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *
     // if so, use that to avoid having to re-parse the header
     cli_exe_info_init(peinfo, 0);
 
-    if (cli_peheader(*ctx->fmap, peinfo, CLI_PEHEADER_OPT_NONE, NULL) != CLI_PEHEADER_RET_SUCCESS) {
+    if (cli_peheader(ctx->fmap, peinfo, CLI_PEHEADER_OPT_NONE, NULL) != CLI_PEHEADER_RET_SUCCESS) {
         cli_exe_info_destroy(peinfo);
         return CL_EFORMAT;
     }
@@ -5875,7 +5876,7 @@ int cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *
 
         for (i = 0; i < peinfo->nsections; i++) {
             /* Generate hashes */
-            if (cli_hashsect(*ctx->fmap, &peinfo->sections[i], hashset, genhash, genhash) == 1) {
+            if (cli_hashsect(ctx->fmap, &peinfo->sections[i], hashset, genhash, genhash) == 1) {
                 if (cli_debug_flag) {
                     dstr = cli_str2hex((char *)hash, hlen);
                     cli_dbgmsg("Section{%u}: %u:%s\n", i, peinfo->sections[i].rsz, dstr ? (char *)dstr : "(NULL)");
@@ -5896,7 +5897,7 @@ int cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *
     } else if (class == CL_GENHASH_PE_CLASS_IMPTBL) {
         char *dstr;
         uint32_t impsz = 0;
-        int ret;
+        cl_error_t ret;
 
         /* Generate hash */
         ret = hash_imptbl(ctx, hashset, &impsz, genhash, peinfo);

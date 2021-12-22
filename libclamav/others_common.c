@@ -64,6 +64,7 @@
 
 #define MSGBUFSIZ 8192
 
+static bool rand_seeded            = false;
 static unsigned char name_salt[16] = {16, 38, 97, 12, 8, 4, 72, 196, 217, 144, 33, 124, 18, 11, 17, 253};
 
 #ifdef CL_THREAD_SAFE
@@ -164,10 +165,19 @@ void cli_infomsg(const cli_ctx *ctx, const char *str, ...)
     msg_callback(CL_MSG_INFO_VERBOSE, buff, buff + len, ctx ? ctx->cb_ctx : NULL);
 }
 
-void cli_dbgmsg_internal(const char *str, ...)
+/* intended for logging in rust modules */
+void cli_infomsg_simple(const char *str, ...)
 {
-    MSGCODE(buff, len, "LibClamAV debug: ");
-    fputs(buff, stderr);
+    MSGCODE(buff, len, "LibClamAV info: ");
+    msg_callback(CL_MSG_INFO_VERBOSE, buff, buff + len, NULL);
+}
+
+inline void cli_dbgmsg(const char *str, ...)
+{
+    if (UNLIKELY(cli_get_debug_flag())) {
+        MSGCODE(buff, len, "LibClamAV debug: ");
+        fputs(buff, stderr);
+    }
 }
 
 int cli_matchregex(const char *str, const char *regex)
@@ -332,7 +342,7 @@ const char *cli_ctime(const time_t *timep, char *buf, const size_t bufsize)
 /**
  * @brief  Try hard to read the requested number of bytes
  *
- * @param fd        File desriptor to read from.
+ * @param fd        File descriptor to read from.
  * @param buff      Buffer to read data into.
  * @param count     # of bytes to read.
  * @return size_t   # of bytes read.
@@ -906,7 +916,7 @@ const char *cli_strerror(int errnum, char *buf, size_t len)
 
 static char *cli_md5buff(const unsigned char *buffer, unsigned int len, unsigned char *dig)
 {
-    unsigned char digest[16];
+    unsigned char digest[16] = {0};
     char *md5str, *pt;
     int i;
 
@@ -929,10 +939,11 @@ static char *cli_md5buff(const unsigned char *buffer, unsigned int len, unsigned
 
 unsigned int cli_rndnum(unsigned int max)
 {
-    if (name_salt[0] == 16) { /* minimizes re-seeding after the first call to cli_gentemp() */
+    if (!rand_seeded) { /* minimizes re-seeding after the first call to cli_gentemp() */
         struct timeval tv;
         gettimeofday(&tv, (struct timezone *)0);
         srand(tv.tv_usec + clock() + rand());
+        rand_seeded = true;
     }
 
     return 1 + (unsigned int)(max * (rand() / (1.0 + RAND_MAX)));
@@ -1159,12 +1170,12 @@ char *cli_newfilepath(const char *dir, const char *fname)
     const char *mdir;
     size_t len;
 
+    mdir = dir ? dir : cli_gettmpdir();
+
     if (NULL == fname) {
         cli_dbgmsg("cli_newfilepath('%s'): fname argument must not be NULL\n", mdir);
         return NULL;
     }
-
-    mdir = dir ? dir : cli_gettmpdir();
 
     len      = strlen(mdir) + strlen(PATHSEP) + strlen(fname) + 1; /* mdir/fname\0 */
     fullpath = (char *)cli_calloc(len, sizeof(char));
@@ -1290,6 +1301,81 @@ int cli_regcomp(regex_t *preg, const char *pattern, int cflags)
     return cli_regcomp_real(preg, pattern, cflags);
 }
 
+#ifdef _WIN32
+cl_error_t cli_get_filepath_from_handle(HANDLE hFile, char **filepath)
+{
+    cl_error_t status               = CL_EARG;
+    char *evaluated_filepath        = NULL;
+    DWORD dwRet                     = 0;
+    WCHAR *long_evaluated_filepathW = NULL;
+    char *long_evaluated_filepathA  = NULL;
+    size_t evaluated_filepath_len   = 0;
+    cl_error_t conv_result;
+
+    if (NULL == filepath) {
+        cli_errmsg("cli_get_filepath_from_handle: Invalid args.\n");
+        goto done;
+    }
+
+    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, NULL, 0, VOLUME_NAME_DOS);
+    if (dwRet == 0) {
+        cli_dbgmsg("cli_get_filepath_from_handle: Failed to resolve handle\n");
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    long_evaluated_filepathW = calloc(dwRet + 1, sizeof(WCHAR));
+    if (NULL == long_evaluated_filepathW) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate %u bytes to store filename\n", dwRet + 1);
+        status = CL_EMEM;
+        goto done;
+    }
+
+    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, long_evaluated_filepathW, dwRet + 1, VOLUME_NAME_DOS);
+    if (dwRet == 0) {
+        cli_dbgmsg("cli_get_filepath_from_handle: Failed to resolve handle\n");
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    if (0 == wcsncmp(L"\\\\?\\UNC", long_evaluated_filepathW, wcslen(L"\\\\?\\UNC"))) {
+        conv_result = cli_codepage_to_utf8(
+            long_evaluated_filepathW,
+            (wcslen(long_evaluated_filepathW)) * sizeof(WCHAR),
+            CODEPAGE_UTF16_LE,
+            &evaluated_filepath,
+            &evaluated_filepath_len);
+        if (CL_SUCCESS != conv_result) {
+            cli_errmsg("cli_get_filepath_from_handle: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
+            status = CL_EOPEN;
+            goto done;
+        }
+    } else {
+        conv_result = cli_codepage_to_utf8(
+            long_evaluated_filepathW + wcslen(L"\\\\?\\"),
+            (wcslen(long_evaluated_filepathW) - wcslen(L"\\\\?\\")) * sizeof(WCHAR),
+            CODEPAGE_UTF16_LE,
+            &evaluated_filepath,
+            &evaluated_filepath_len);
+        if (CL_SUCCESS != conv_result) {
+            cli_errmsg("cli_get_filepath_from_handle: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
+            status = CL_EOPEN;
+            goto done;
+        }
+    }
+
+    cli_dbgmsg("cli_get_filepath_from_handle: File path for handle %p is: %s\n", (void *)hFile, evaluated_filepath);
+    status    = CL_SUCCESS;
+    *filepath = evaluated_filepath;
+
+done:
+    if (NULL != long_evaluated_filepathW) {
+        free(long_evaluated_filepathW);
+    }
+    return status;
+}
+#endif
+
 cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
 {
     cl_error_t status        = CL_EARG;
@@ -1327,7 +1413,8 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
         goto done;
     }
 
-#elif __APPLE__
+#elif C_DARWIN
+
     char fname[PATH_MAX];
     memset(&fname, 0, PATH_MAX);
 
@@ -1350,63 +1437,19 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
     }
 
 #elif _WIN32
-    DWORD dwRet                     = 0;
-    intptr_t hFile                  = _get_osfhandle(desc);
-    WCHAR *long_evaluated_filepathW = NULL;
-    char *long_evaluated_filepathA  = NULL;
-    size_t evaluated_filepath_len   = 0;
-    cl_error_t conv_result;
+    intptr_t hFile = _get_osfhandle(desc);
+    cl_error_t handle_result;
 
     if (NULL == filepath) {
         cli_errmsg("cli_get_filepath_from_filedesc: Invalid args.\n");
         goto done;
     }
 
-    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, NULL, 0, VOLUME_NAME_DOS);
-    if (dwRet == 0) {
-        cli_dbgmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
+    handle_result = cli_get_filepath_from_handle((HANDLE)hFile, &evaluated_filepath);
+    if (CL_SUCCESS != handle_result) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Failed to get file path from handle\n");
         status = CL_EOPEN;
         goto done;
-    }
-
-    long_evaluated_filepathW = calloc(dwRet + 1, sizeof(WCHAR));
-    if (NULL == long_evaluated_filepathW) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate %u bytes to store filename\n", dwRet + 1);
-        status = CL_EMEM;
-        goto done;
-    }
-
-    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, long_evaluated_filepathW, dwRet + 1, VOLUME_NAME_DOS);
-    if (dwRet == 0) {
-        cli_dbgmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
-        status = CL_EOPEN;
-        goto done;
-    }
-
-    if (0 == wcsncmp(L"\\\\?\\UNC", long_evaluated_filepathW, wcslen(L"\\\\?\\UNC"))) {
-        conv_result = cli_codepage_to_utf8(
-            long_evaluated_filepathW,
-            (wcslen(long_evaluated_filepathW)) * sizeof(WCHAR),
-            CODEPAGE_UTF16_LE,
-            &evaluated_filepath,
-            &evaluated_filepath_len);
-        if (CL_SUCCESS != conv_result) {
-            cli_errmsg("cli_get_filepath_from_filedesc: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
-            status = CL_EOPEN;
-            goto done;
-        }
-    } else {
-        conv_result = cli_codepage_to_utf8(
-            long_evaluated_filepathW + wcslen(L"\\\\?\\"),
-            (wcslen(long_evaluated_filepathW) - wcslen(L"\\\\?\\")) * sizeof(WCHAR),
-            CODEPAGE_UTF16_LE,
-            &evaluated_filepath,
-            &evaluated_filepath_len);
-        if (CL_SUCCESS != conv_result) {
-            cli_errmsg("cli_get_filepath_from_filedesc: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
-            status = CL_EOPEN;
-            goto done;
-        }
     }
 
 #else
@@ -1422,12 +1465,6 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
     *filepath = evaluated_filepath;
 
 done:
-
-#ifdef _WIN32
-    if (NULL != long_evaluated_filepathW) {
-        free(long_evaluated_filepathW);
-    }
-#endif
     return status;
 }
 
@@ -1436,7 +1473,9 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
     char *real_file_path = NULL;
     cl_error_t status    = CL_EARG;
 #ifdef _WIN32
-    int desc = -1;
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+#elif C_DARWIN
+    int fd = -1;
 #endif
 
     cli_dbgmsg("Checking realpath of %s\n", file_name);
@@ -1446,7 +1485,47 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
         goto done;
     }
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+    hFile = CreateFileA(file_name,                  // file to open
+                        GENERIC_READ,               // open for reading
+                        FILE_SHARE_READ,            // share for reading
+                        NULL,                       // default security
+                        OPEN_EXISTING,              // existing file only
+                        FILE_FLAG_BACKUP_SEMANTICS, // may be a directory
+                        NULL);                      // no attr. template
+    if (hFile == INVALID_HANDLE_VALUE) {
+        cli_warnmsg("Can't open file %s: %d\n", file_name, GetLastError());
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    status = cli_get_filepath_from_handle(hFile, &real_file_path);
+
+#elif C_DARWIN
+
+    /* Using the filepath from filedesc method on macOS because
+       realpath will fail to check the realpath of a symbolic link if
+       the link doesn't point to anything.
+       Plus, we probably don't wan tot follow the link in this case anyways,
+       so this will check the realpath of the link, and not of the thing the
+       link points to. */
+    fd = open(file_name, O_RDONLY | O_SYMLINK);
+    if (fd == -1) {
+        char err[128];
+        cli_strerror(errno, err, sizeof(err));
+        if (errno == EACCES) {
+            status = CL_EACCES;
+        } else {
+            status = CL_EOPEN;
+        }
+        cli_dbgmsg("Can't open file %s: %s\n", file_name, err);
+        goto done;
+    }
+
+    status = cli_get_filepath_from_filedesc(fd, &real_file_path);
+
+#else
 
     real_file_path = realpath(file_name, NULL);
     if (NULL == real_file_path) {
@@ -1456,16 +1535,6 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 
     status = CL_SUCCESS;
 
-#else
-
-    if ((desc = safe_open(file_name, O_RDONLY | O_BINARY)) == -1) {
-        cli_warnmsg("Can't open file %s: %s\n", file_name, strerror(errno));
-        status = CL_EOPEN;
-        goto done;
-    }
-
-    status = cli_get_filepath_from_filedesc(desc, &real_file_path);
-
 #endif
 
     *real_filename = real_file_path;
@@ -1473,8 +1542,12 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 done:
 
 #ifdef _WIN32
-    if (-1 != desc) {
-        close(desc);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(hFile);
+    }
+#elif C_DARWIN
+    if (fd != -1) {
+        close(fd);
     }
 #endif
 

@@ -22,13 +22,21 @@ target_include_directories( clamdtop
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
 )
 set_target_properties( clamdtop PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}" )
+
+if (APPLE AND CLAMAV_SIGN_FILE)
+    set_target_properties( clamdtop PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ${CODE_SIGN_IDENTITY}
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
+    )
+endif()
+
 target_link_libraries( clamdtop
     PRIVATE
         ClamAV::libclamav
         ClamAV::common
         Curses::curses )
 if(WIN32)
-    install(TARGETS clamdtop DESTINATION .)
+    install(TARGETS clamdtop DESTINATION . COMPONENT programs)
     # Also install shared library (DLL) dependencies
     install(CODE [[
         file(GET_RUNTIME_DEPENDENCIES
@@ -51,7 +59,8 @@ if(WIN32)
             endif()
         endforeach()
         #message("UNRESOLVED_DEPENDENCIES_VAR: ${_u_deps}")
-    ]])
+        ]]
+        COMPONENT programs)
 else()
-    install(TARGETS clamdtop DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS clamdtop DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()

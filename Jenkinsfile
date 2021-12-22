@@ -1,40 +1,46 @@
 properties(
     [
         disableConcurrentBuilds(),
+        buildDiscarder(logRotator(
+            artifactDaysToKeepStr: '15',
+            artifactNumToKeepStr: '15',
+            daysToKeepStr: '30',
+            numToKeepStr: '20')),
+
         parameters(
             [
                 string(name: 'VERSION',
-                       defaultValue: '0.104.0',
+                       defaultValue: '0.105.0',
                        description: 'ClamAV version string'),
                 string(name: 'FRAMEWORK_BRANCH',
-                       defaultValue: '0.104',
+                       defaultValue: '0.105',
                        description: 'test-framework branch'),
                 string(name: 'TESTS_BRANCH',
-                       defaultValue: '0.104',
+                       defaultValue: '0.105',
                        description: 'tests branch'),
                 string(name: 'TESTS_CUSTOM_BRANCH',
-                       defaultValue: '0.104',
+                       defaultValue: '0.105',
                        description: 'tests-custom branch'),
                 string(name: 'TESTS_FUZZ_BRANCH',
-                       defaultValue: '0.104',
+                       defaultValue: '0.105',
                        description: 'tests-fuzz-regression branch'),
                 string(name: 'BUILD_PIPELINE',
-                       defaultValue: 'build-0.104',
+                       defaultValue: 'build-0.105',
                        description: 'test-pipelines branch for build acceptance'),
                 string(name: 'REGULAR_PIPELINE',
-                       defaultValue: 'regular-0.104',
+                       defaultValue: 'regular-0.105',
                        description: 'test-pipelines branch for regular tests.'),
                 string(name: 'CUSTOM_PIPELINE',
-                       defaultValue: 'custom-0.104',
+                       defaultValue: 'custom-0.105',
                        description: 'test-pipelines branch for custom tests'),
                 string(name: 'FUZZ_PIPELINE',
-                       defaultValue: 'fuzz-regression-0.104',
+                       defaultValue: 'fuzz-regression-0.105',
                        description: 'test-pipelines branch for fuzz regression tests'),
                 string(name: 'FUZZ_CORPUS_BRANCH',
                        defaultValue: 'master',
                        description: 'private-fuzz-corpus branch'),
                 string(name: 'APPCHECK_PIPELINE',
-                       defaultValue: 'appcheck-0.104',
+                       defaultValue: 'appcheck-0.105',
                        description: 'test-pipelines branch for appcheck'),
                 string(name: 'SHARED_LIB_BRANCH',
                        defaultValue: 'master',
@@ -66,9 +72,8 @@ node('master') {
         dir(path: 'build') {
             sh """# CPack
                 cmake .. -D VENDOR_DEPENDENCIES=ON
-                cpack --config CPackSourceConfig.cmake
-                mv clamav-${params.VERSION}*.tar.gz clamav-${params.VERSION}.tar.gz || true """
-            archiveArtifacts(artifacts: "clamav-${params.VERSION}.tar.gz", onlyIfSuccessful: true)
+                cpack --config CPackSourceConfig.cmake """
+            archiveArtifacts(artifacts: "clamav-${params.VERSION}*.tar.gz", onlyIfSuccessful: true)
         }
 
         cleanWs()

@@ -125,7 +125,7 @@ fmap_t *fmap_check_empty(int fd, off_t offset, size_t len, int *empty, const cha
         *empty = 1;
         return NULL;
     }
-    if (!CLI_ISCONTAINED(0, st.st_size, offset, len)) {
+    if (!CLI_ISCONTAINED_0_TO(st.st_size, offset, len)) {
         cli_warnmsg("fmap: attempted oof mapping\n");
         return NULL;
     }
@@ -187,7 +187,7 @@ fmap_t *fmap_check_empty(int fd, off_t offset, size_t len, int *empty, const cha
         *empty = 1;
         return NULL;
     }
-    if (!CLI_ISCONTAINED(0, st.st_size, offset, len)) {
+    if (!CLI_ISCONTAINED_0_TO(st.st_size, offset, len)) {
         cli_warnmsg("fmap: attempted oof mapping\n");
         return NULL;
     }
@@ -259,38 +259,42 @@ fmap_t *fmap_duplicate(cl_fmap_t *map, size_t offset, size_t length, const char 
     }
 
     if (offset > 0 || length < map->len) {
-        /* Caller requested a window into the current map, not the whole map */
-        unsigned char hash[16] = {'\0'};
+        /*
+         * Caller requested a window into the current map, not the whole map.
+         */
 
         /* Set the new nested offset and (nested) length for the new map */
-        /* can't change offset because then we'd have to discard/move cached
+        /* Note: We can't change offset because then we'd have to discard/move cached
          * data, instead use nested_offset to reuse the already cached data */
         duplicate_map->nested_offset += offset;
         duplicate_map->len = MIN(length, map->len - offset);
 
-        if (!CLI_ISCONTAINED2(map->nested_offset, map->len,
-                              duplicate_map->nested_offset, duplicate_map->len)) {
+        /* The real_len is the nested_offset + the len of the nested fmap.
+           real_len is mostly just a shorthand for when doing bounds checking.
+           We do not need to keep track of the original length of the OG fmap */
+        duplicate_map->real_len = duplicate_map->nested_offset + duplicate_map->len;
+
+        if (!CLI_ISCONTAINED_2(map->nested_offset, map->len,
+                               duplicate_map->nested_offset, duplicate_map->len)) {
             size_t len1, len2;
             len1 = map->nested_offset + map->len;
             len2 = duplicate_map->nested_offset + duplicate_map->len;
             cli_warnmsg("fmap_duplicate: internal map error: %zu, %zu; %zu, %zu\n",
                         map->nested_offset, len1,
-                        duplicate_map->offset, len2);
+                        duplicate_map->nested_offset, len2);
         }
 
-        /* Calculate the fmap hash to be used by the FP check later */
-        if (CL_SUCCESS != fmap_get_MD5(hash, duplicate_map)) {
-            cli_warnmsg("fmap_duplicate: failed to get fmap MD5\n");
-            goto done;
-        }
-        memcpy(duplicate_map->maphash, hash, 16);
+        /* This also means the hash will be different.
+         * Clear the have_maphash flag.
+         * It will be calculated when next it is needed. */
+        duplicate_map->have_maphash = false;
     }
 
     if (NULL != name) {
         duplicate_map->name = cli_strdup(name);
         if (NULL == duplicate_map->name) {
-            free(duplicate_map);
-            return NULL;
+            status = CL_EMEM;
+            goto done;
         }
     } else {
         duplicate_map->name = NULL;
@@ -350,8 +354,6 @@ extern cl_fmap_t *cl_fmap_open_handle(void *handle, size_t offset, size_t len,
     size_t mapsz, bitmap_size;
     cl_fmap_t *m = NULL;
     int pgsz     = cli_getpagesize();
-
-    unsigned char hash[16] = {'\0'};
 
     if ((off_t)offset < 0 || offset != fmap_align_to(offset, pgsz)) {
         cli_warnmsg("fmap: attempted mapping with unaligned offset\n");
@@ -427,13 +429,7 @@ extern cl_fmap_t *cl_fmap_open_handle(void *handle, size_t offset, size_t len,
     m->gets            = handle_gets;
     m->unneed_off      = handle_unneed_off;
     m->handle_is_fd    = 1;
-
-    /* Calculate the fmap hash to be used by the FP check later */
-    if (CL_SUCCESS != fmap_get_MD5(hash, m)) {
-        cli_warnmsg("fmap: failed to get MD5\n");
-        goto done;
-    }
-    memcpy(m->maphash, hash, 16);
+    m->have_maphash    = false;
 
     status = CL_SUCCESS;
 
@@ -510,6 +506,8 @@ static void fmap_aging(fmap_t *m)
             m->paged -= avail;
         }
     }
+#else
+    UNUSEDPARAM(m);
 #endif
 }
 
@@ -531,6 +529,7 @@ static int fmap_readpage(fmap_t *m, uint64_t first_page, uint64_t count, uint64_
         /* Also not worth reusing the loop below */
         volatile char faultme;
         faultme = ((char *)m->data)[(first_page + i) * m->pgsz];
+        (void)faultme; // silence "warning: variable ‘faultme’ set but not used"
     }
     fmap_unlock;
     for (i = 0; i <= count; i++, page++) {
@@ -596,8 +595,8 @@ static int fmap_readpage(fmap_t *m, uint64_t first_page, uint64_t count, uint64_
             eintr_off = 0;
             while (readsz) {
                 ssize_t got;
-                off_t target_offset = eintr_off + m->offset + (first_page * m->pgsz);
-                got                 = m->pread_cb(m->handle, pptr, readsz, target_offset);
+                uint64_t target_offset = eintr_off + m->offset + (first_page * m->pgsz);
+                got                    = m->pread_cb(m->handle, pptr, readsz, target_offset);
 
                 if (got < 0 && errno == EINTR)
                     continue;
@@ -613,7 +612,7 @@ static int fmap_readpage(fmap_t *m, uint64_t first_page, uint64_t count, uint64_
                     cli_strerror(errno, errtxt, sizeof(errtxt));
                     cli_errmsg("fmap_readpage: pread error: %s\n", errtxt);
                 } else {
-                    cli_warnmsg("fmap_readpage: pread fail: asked for %zu bytes @ offset %zu, got %zd\n", readsz, (size_t)target_offset, got);
+                    cli_warnmsg("fmap_readpage: pread fail: asked for %zu bytes @ offset " STDu64 ", got %zd\n", readsz, target_offset, got);
                 }
                 return 1;
             }
@@ -652,7 +651,7 @@ static const void *handle_need(fmap_t *m, size_t at, size_t len, int lock)
         return NULL;
 
     at += m->nested_offset;
-    if (!CLI_ISCONTAINED(0, m->real_len, at, len))
+    if (!CLI_ISCONTAINED(m->nested_offset, m->len, at, len))
         return NULL;
 
     fmap_aging(m);
@@ -701,7 +700,7 @@ static void handle_unneed_off(fmap_t *m, size_t at, size_t len)
     }
 
     at += m->nested_offset;
-    if (!CLI_ISCONTAINED(0, m->real_len, at, len)) {
+    if (!CLI_ISCONTAINED(m->nested_offset, m->len, at, len)) {
         cli_warnmsg("fmap: attempted oof unneed\n");
         return;
     }
@@ -722,6 +721,8 @@ static void unmap_mmap(fmap_t *m)
     if (munmap((void *)m->data, len) == -1) /* munmap() failed */
         cli_warnmsg("funmap: unable to unmap memory segment at address: %p with length: %zu\n", (void *)m->data, len);
     fmap_unlock;
+#else
+    UNUSEDPARAM(m);
 #endif
 }
 
@@ -738,12 +739,15 @@ static void unmap_malloc(fmap_t *m)
 static const void *handle_need_offstr(fmap_t *m, size_t at, size_t len_hint)
 {
     uint64_t i, first_page, last_page;
-    void *ptr = (void *)((char *)m->data + at);
+    void *ptr;
+
+    at += m->nested_offset;
+    ptr = (void *)((char *)m->data + at);
 
     if (!len_hint || len_hint > m->real_len - at)
         len_hint = m->real_len - at;
 
-    if (!CLI_ISCONTAINED(0, m->real_len, at, len_hint))
+    if (!CLI_ISCONTAINED(m->nested_offset, m->len, at, len_hint))
         return NULL;
 
     fmap_aging(m);
@@ -778,18 +782,18 @@ static const void *handle_need_offstr(fmap_t *m, size_t at, size_t len_hint)
 static const void *handle_gets(fmap_t *m, char *dst, size_t *at, size_t max_len)
 {
     uint64_t i, first_page, last_page;
-    char *src     = (void *)((char *)m->data + *at);
+    char *src     = (char *)m->data + m->nested_offset + *at;
     char *endptr  = NULL;
-    size_t len    = MIN(max_len - 1, m->real_len - *at);
+    size_t len    = MIN(max_len - 1, m->len - *at);
     size_t fullen = len;
 
-    if (!len || !CLI_ISCONTAINED(0, m->real_len, *at, len))
+    if (!len || !CLI_ISCONTAINED_0_TO(m->len, *at, len))
         return NULL;
 
     fmap_aging(m);
 
-    first_page = fmap_which_page(m, *at);
-    last_page  = fmap_which_page(m, *at + len - 1);
+    first_page = fmap_which_page(m, m->nested_offset + *at);
+    last_page  = fmap_which_page(m, m->nested_offset + *at + len - 1);
 
     for (i = first_page; i <= last_page; i++) {
         char *thispage = (char *)m->data + i * m->pgsz;
@@ -799,7 +803,7 @@ static const void *handle_gets(fmap_t *m, char *dst, size_t *at, size_t max_len)
             return NULL;
 
         if (i == first_page) {
-            scanat = *at % m->pgsz;
+            scanat = (m->nested_offset + *at) % m->pgsz;
             scansz = MIN(len, m->pgsz - scanat);
         } else {
             scanat = 0;
@@ -833,13 +837,13 @@ static const void *mem_gets(fmap_t *m, char *dst, size_t *at, size_t max_len);
 
 fmap_t *fmap_open_memory(const void *start, size_t len, const char *name)
 {
-    unsigned char hash[16] = {'\0'};
+    cl_error_t status = CL_ERROR;
 
     int pgsz     = cli_getpagesize();
     cl_fmap_t *m = cli_calloc(1, sizeof(*m));
     if (!m) {
         cli_warnmsg("fmap: map allocation failed\n");
-        return NULL;
+        goto done;
     }
     m->data        = start;
     m->len         = len;
@@ -853,22 +857,26 @@ fmap_t *fmap_open_memory(const void *start, size_t len, const char *name)
     m->unneed_off  = mem_unneed_off;
 
     if (NULL != name) {
+        /* Copy the name, if one is given */
         m->name = cli_strdup(name);
         if (NULL == m->name) {
-            free(m);
-            return NULL;
+            cli_warnmsg("fmap: failed to duplicate map name\n");
+            goto done;
         }
     }
 
-    /* Calculate the fmap hash to be used by the FP check later */
-    if (CL_SUCCESS != fmap_get_MD5(hash, m)) {
-        if (NULL != m->name) {
-            free(m->name);
+    status = CL_SUCCESS;
+
+done:
+    if (CL_SUCCESS != status) {
+        if (NULL != m) {
+            if (NULL != m->name) {
+                free(m->name);
+            }
+            free(m);
+            m = NULL;
         }
-        free(m);
-        return NULL;
     }
-    memcpy(m->maphash, hash, 16);
 
     return m;
 }
@@ -879,13 +887,13 @@ extern cl_fmap_t *cl_fmap_open_memory(const void *start, size_t len)
 }
 
 static const void *mem_need(fmap_t *m, size_t at, size_t len, int lock)
-{ /* WIN32 */
+{
     UNUSEDPARAM(lock);
     if (!len) {
         return NULL;
     }
     at += m->nested_offset;
-    if (!CLI_ISCONTAINED(0, m->real_len, at, len)) {
+    if (!CLI_ISCONTAINED(m->nested_offset, m->len, at, len)) {
         return NULL;
     }
 
@@ -901,12 +909,15 @@ static void mem_unneed_off(fmap_t *m, size_t at, size_t len)
 
 static const void *mem_need_offstr(fmap_t *m, size_t at, size_t len_hint)
 {
-    char *ptr = (char *)m->data + at;
+    char *ptr;
+
+    at += m->nested_offset;
+    ptr = (char *)m->data + at;
 
     if (!len_hint || len_hint > m->real_len - at)
         len_hint = m->real_len - at;
 
-    if (!CLI_ISCONTAINED(0, m->real_len, at, len_hint))
+    if (!CLI_ISCONTAINED(m->nested_offset, m->len, at, len_hint))
         return NULL;
 
     if (memchr(ptr, 0, len_hint))
@@ -916,10 +927,11 @@ static const void *mem_need_offstr(fmap_t *m, size_t at, size_t len_hint)
 
 static const void *mem_gets(fmap_t *m, char *dst, size_t *at, size_t max_len)
 {
-    char *src = (char *)m->data + *at, *endptr = NULL;
-    size_t len = MIN(max_len - 1, m->real_len - *at);
+    char *src    = (char *)m->data + m->nested_offset + *at;
+    char *endptr = NULL;
+    size_t len   = MIN(max_len - 1, m->len - *at);
 
-    if (!len || !CLI_ISCONTAINED(0, m->real_len, *at, len))
+    if (!len || !CLI_ISCONTAINED_0_TO(m->len, *at, len))
         return NULL;
 
     if ((endptr = memchr(src, '\n', len))) {
@@ -988,8 +1000,7 @@ cl_error_t fmap_dump_to_file(fmap_t *map, const char *filepath, const char *tmpd
             prefix            = malloc(prefix_len);
             if (NULL == prefix) {
                 cli_errmsg("fmap_dump_to_file: Failed to allocate memory for tempfile prefix.\n");
-                if (NULL != filebase)
-                    free(filebase);
+                free(filebase);
                 return CL_EMEM;
             }
             snprintf(prefix, prefix_len, "%s.%zu-%zu", filebase, start_offset, end_offset);
@@ -1071,39 +1082,57 @@ extern void cl_fmap_close(cl_fmap_t *map)
     funmap(map);
 }
 
-cl_error_t fmap_get_MD5(unsigned char *hash, fmap_t *map)
+cl_error_t fmap_get_MD5(fmap_t *map, unsigned char **hash)
 {
+    cl_error_t status = CL_ERROR;
     size_t todo, at = 0;
-    void *hashctx;
+    void *hashctx = NULL;
 
     todo = map->len;
 
-    hashctx = cl_hash_init("md5");
-    if (!(hashctx)) {
-        cli_errmsg("ctx_get_MD5: error initializing new md5 hash!\n");
-        return CL_ERROR;
-    }
-
-    while (todo) {
-        const void *buf;
-        size_t readme = todo < 1024 * 1024 * 10 ? todo : 1024 * 1024 * 10;
-
-        if (!(buf = fmap_need_off_once(map, at, readme))) {
-            cl_hash_destroy(hashctx);
-            return CL_EREAD;
+    if (!map->have_maphash) {
+        /* Need to calculate the hash */
+        hashctx = cl_hash_init("md5");
+        if (!(hashctx)) {
+            cli_errmsg("fmap_get_MD5: error initializing new md5 hash!\n");
+            goto done;
         }
 
-        todo -= readme;
-        at += readme;
+        while (todo) {
+            const void *buf;
+            size_t readme = todo < 1024 * 1024 * 10 ? todo : 1024 * 1024 * 10;
 
-        if (cl_update_hash(hashctx, (void *)buf, readme)) {
-            cl_hash_destroy(hashctx);
-            cli_errmsg("ctx_get_MD5: error reading while generating hash!\n");
-            return CL_EREAD;
+            if (!(buf = fmap_need_off_once(map, at, readme))) {
+                cli_errmsg("fmap_get_MD5: error reading while generating hash!\n");
+                status = CL_EREAD;
+                goto done;
+            }
+
+            todo -= readme;
+            at += readme;
+
+            if (cl_update_hash(hashctx, (void *)buf, readme)) {
+                cli_errmsg("fmap_get_MD5: error calculating hash!\n");
+                status = CL_EREAD;
+                goto done;
+            }
         }
+
+        cl_finish_hash(hashctx, map->maphash);
+        hashctx = NULL;
+
+        map->have_maphash = true;
     }
 
-    cl_finish_hash(hashctx, hash);
+    *hash = map->maphash;
 
-    return CL_CLEAN;
+    status = CL_SUCCESS;
+
+done:
+
+    if (NULL != hashctx) {
+        cl_hash_destroy(hashctx);
+    }
+
+    return status;
 }
